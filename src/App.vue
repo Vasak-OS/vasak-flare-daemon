@@ -1,6 +1,6 @@
 <script setup lang="ts">
+import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getIconSource } from '@vasakgroup/plugin-vicons';
 import { useConfigStore } from '@vasakgroup/plugin-config-manager';
 import type { Store } from 'pinia';
@@ -22,7 +22,6 @@ const HIDE_MS = 5000;
 
 const current = ref<FlareNotification | null>(null);
 const iconSrc = ref('');
-const appWindow = getCurrentWindow();
 const unlisteners: UnlistenFn[] = [];
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -50,13 +49,13 @@ function clearHide() {
 async function hide() {
 	clearHide();
 	current.value = null;
-	await appWindow.hide();
+	await invoke('hide_banner').catch(() => {});
 }
 
 async function show(n: FlareNotification) {
 	current.value = n;
 	await resolveIcon(n.app_icon);
-	await appWindow.show();
+	await invoke('show_banner').catch(() => {});
 	clearHide();
 	// Critical notifications stay until dismissed.
 	if (n.urgency < 2) {
