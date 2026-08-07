@@ -134,6 +134,14 @@ impl Db {
         Ok(items)
     }
 
+    pub fn notif_id_for_history(&self, id: i64) -> rusqlite::Result<Option<u32>> {
+        let conn = self.conn.lock().unwrap();
+        let v: Option<i64> = conn
+            .query_row("SELECT notif_id FROM notifications WHERE id = ?1", params![id], |r| r.get(0))
+            .optional()?;
+        Ok(v.map(|x| x as u32))
+    }
+
     pub fn unread_count(&self) -> rusqlite::Result<i64> {
         self.conn
             .lock()

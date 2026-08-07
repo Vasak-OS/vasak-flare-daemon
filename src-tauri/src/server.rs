@@ -71,6 +71,19 @@ async fn emit_closed(id: u32, reason: u32) {
     }
 }
 
+/// Notify subscribers (the desktop history view) that the store changed.
+async fn emit_changed() {
+    if let Some(conn) = CONN.get() {
+        if let Ok(iface) = conn
+            .object_server()
+            .interface::<_, VasakNotifications>(VASAK_PATH)
+            .await
+        {
+            let _ = VasakNotifications::changed(iface.signal_context()).await;
+        }
+    }
+}
+
 #[interface(name = "org.freedesktop.Notifications")]
 impl NotificationServer {
     async fn get_capabilities(&self) -> Vec<String> {
@@ -147,8 +160,9 @@ impl NotificationServer {
         };
         stored.id = row_id;
 
-        // Tell the UI to show a banner.
+        // Tell the UI to show a banner, and the desktop history to refresh.
         let _ = self.state.app.emit("notification://new", &stored);
+        emit_changed().await;
 
         // Auto-close: default (-1) => 5s (never for critical); 0 => never; else ms.
         let expire_ms: Option<u64> = match expire_timeout {
@@ -178,6 +192,11 @@ impl NotificationServer {
 
 #[interface(name = "org.vasak.Notifications")]
 impl VasakNotifications {
+    /// Emitted whenever the store changes (new notification, read/cleared), so
+    /// the desktop history view can refresh without polling.
+    #[zbus(signal)]
+    async fn changed(ctxt: &SignalContext<'_>) -> zbus::Result<()>;
+
     /// Full history (newest first), JSON-encoded. `limit <= 0` uses a default cap.
     async fn get_all(&self, limit: i64) -> String {
         let limit = if limit <= 0 { 200 } else { limit };
@@ -197,18 +216,39 @@ impl VasakNotifications {
 
     async fn mark_read(&self, id: i64) {
         let _ = self.state.db.mark_read(id);
+        emit_changed().await;
     }
 
     async fn mark_all_read(&self) {
         let _ = self.state.db.mark_all_read();
+        emit_changed().await;
     }
 
     async fn clear(&self, id: i64) {
         let _ = self.state.db.delete(id);
+        emit_changed().await;
     }
 
     async fn clear_all(&self) {
         let _ = self.state.db.clear_all();
+        emit_changed().await;
+    }
+
+    /// Invoke an action on a notification (by history id): translate to the
+    /// notification's freedesktop id and emit ActionInvoked to the source app.
+    async fn invoke_action(&self, id: i64, action_key: String) {
+        if let Ok(Some(notif_id)) = self.state.db.notif_id_for_history(id) {
+            if let Some(conn) = CONN.get() {
+                if let Ok(iface) = conn
+                    .object_server()
+                    .interface::<_, NotificationServer>(NOTIF_PATH)
+                    .await
+                {
+                    let _ =
+                        NotificationServer::action_invoked(iface.signal_context(), notif_id, &action_key).await;
+                }
+            }
+        }
     }
 }
 
