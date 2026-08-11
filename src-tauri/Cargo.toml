@@ -1,6 +1,6 @@
 [package]
 name = "vasak-flare-daemon"
-version = "0.1.0"
+version = "0.2.0"
 description = "Persistent freedesktop notification daemon for VasakOS"
 authors = ["Vasak Group", "Joaquin (Pato) Decima"]
 edition = "2021"
