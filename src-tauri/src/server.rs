@@ -71,6 +71,34 @@ async fn emit_closed(id: u32, reason: u32) {
     }
 }
 
+/// Tell the application that sent a notification that somebody acted on it.
+///
+/// This is the whole point of a notification that says "Reply" or opens a page:
+/// without this signal the click does nothing at all, which is exactly what was
+/// happening — the banner only knew how to hide itself.
+pub async fn emit_action(notif_id: u32, action_key: &str) {
+    if let Some(conn) = CONN.get() {
+        if let Ok(iface) = conn
+            .object_server()
+            .interface::<_, NotificationServer>(NOTIF_PATH)
+            .await
+        {
+            let _ =
+                NotificationServer::action_invoked(iface.signal_context(), notif_id, action_key)
+                    .await;
+        }
+    }
+}
+
+/// The notification is gone because somebody dealt with it.
+///
+/// Reason 2 is the user's doing, as opposed to the timeout (1). Applications
+/// use this to stop tracking a notification they are still holding on to; a
+/// server that never sends it leaves them waiting forever.
+pub async fn emit_dismissed(notif_id: u32) {
+    emit_closed(notif_id, 2).await;
+}
+
 /// Notify subscribers (the desktop history view) that the store changed.
 async fn emit_changed() {
     if let Some(conn) = CONN.get() {
@@ -248,6 +276,9 @@ impl VasakNotifications {
                         NotificationServer::action_invoked(iface.signal_context(), notif_id, &action_key).await;
                 }
             }
+
+            // Y se da por cerrada: quien la mandó tiene que dejar de esperarla.
+            emit_dismissed(notif_id).await;
         }
     }
 }

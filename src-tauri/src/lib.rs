@@ -12,6 +12,19 @@ thread_local! {
     static BANNER_WIN: RefCell<Option<gtk::Window>> = const { RefCell::new(None) };
 }
 
+/// Carry out what a notification promised: the action the person clicked.
+///
+/// The banner used to have a single behaviour —hide itself— so clicking a
+/// notification that offered to open a page or bring an application to the
+/// front did nothing. The identifier is the freedesktop one, which is what the
+/// application that sent the notification knows about.
+#[tauri::command]
+async fn activate_notification(notif_id: u32, action_key: String) {
+    server::emit_action(notif_id, &action_key).await;
+    // Y se da por cerrada: quien la mandó tiene que dejar de esperarla.
+    server::emit_dismissed(notif_id).await;
+}
+
 #[tauri::command]
 fn show_banner(app: AppHandle) -> Result<(), String> {
     app.run_on_main_thread(|| {
@@ -99,7 +112,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_config_manager::init())
         .plugin(tauri_plugin_vicons::init())
-        .invoke_handler(tauri::generate_handler![show_banner, hide_banner])
+        .invoke_handler(tauri::generate_handler![show_banner, hide_banner, activate_notification])
         .setup(|app| {
             // Reparent the banner into a layer-shell overlay (kept hidden until
             // a notification arrives; the UI calls show_banner/hide_banner).
