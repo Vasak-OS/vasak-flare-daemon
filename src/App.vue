@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { getIconSource } from '@vasakgroup/plugin-vicons';
 import { useConfigStore } from '@vasakgroup/plugin-config-manager';
+import { getIconSource } from '@vasakgroup/plugin-vicons';
 import type { Store } from 'pinia';
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 
 interface FlareNotification {
 	id: number;
@@ -26,6 +26,18 @@ interface Action {
 	label: string;
 }
 
+/**
+ * Una notificación mientras está en pantalla.
+ *
+ * Cada cartel tiene su propio ícono ya resuelto y su propio reloj: llegan de a
+ * una y se van cuando les toca, no todas juntas.
+ */
+interface Banner {
+	notification: FlareNotification;
+	icon: string;
+	timer: ReturnType<typeof setTimeout> | null;
+}
+
 const HIDE_MS = 5000;
 
 /**
@@ -37,28 +49,64 @@ const HIDE_MS = 5000;
  */
 const DEFAULT_ACTION = 'default';
 
-const current = ref<FlareNotification | null>(null);
-const iconSrc = ref('');
-const unlisteners: UnlistenFn[] = [];
-let hideTimer: ReturnType<typeof setTimeout> | null = null;
+/** Ancho fijo de la pila. Alcanza para que los botones no pisen el texto. */
+const BANNER_WIDTH = 420;
 
-async function resolveIcon(name: string) {
-	iconSrc.value = '';
-	if (!name) return;
+/** Techo de carteles visibles a la vez, antes de mirar el alto de la pantalla. */
+const MAX_STACK = 3;
+
+/** Alto aproximado de un cartel, sólo para estimar cuántos entran. */
+const CARD_HEIGHT_HINT = 150;
+
+/**
+ * Cuántas notificaciones vivas se recuerdan.
+ *
+ * Las que no entran en la pila igual quedan contadas, pero la cola no puede
+ * crecer sin fin: el historial completo ya está en la base del demonio.
+ */
+const QUEUE_LIMIT = 20;
+
+/**
+ * Cuántos carteles se apilan sin tapar media pantalla.
+ *
+ * La ventana está anclada abajo a la derecha y crece hacia arriba, así que el
+ * límite real es el alto del monitor: en una pantalla chica se apilan menos.
+ */
+const maxVisible = (() => {
+	const screenHeight = window.screen?.height ?? 0;
+	if (!screenHeight) return MAX_STACK;
+	const fits = Math.floor((screenHeight * 0.5) / CARD_HEIGHT_HINT);
+	return Math.min(MAX_STACK, Math.max(1, fits));
+})();
+
+/** Las notificaciones vivas, de la más vieja a la más nueva. */
+const banners = ref<Banner[]>([]);
+const stack = ref<HTMLElement | null>(null);
+const unlisteners: UnlistenFn[] = [];
+let sizeObserver: ResizeObserver | null = null;
+let lastHeight = 0;
+
+/** Las últimas: la más nueva queda abajo, pegada a la esquina donde apareció. */
+const visible = computed(() => banners.value.slice(-maxVisible));
+
+/** Las que no entran en la pila. Se muestran como un contador arriba de todo. */
+const hiddenCount = computed(() => Math.max(0, banners.value.length - maxVisible));
+
+async function resolveIcon(name: string): Promise<string> {
+	if (!name) return '';
 	if (name.startsWith('/') || name.startsWith('file://')) {
-		iconSrc.value = name.startsWith('file://') ? name : `file://${name}`;
-		return;
+		return name.startsWith('file://') ? name : `file://${name}`;
 	}
 	try {
-		iconSrc.value = await getIconSource(name);
+		return await getIconSource(name);
 	} catch {
-		iconSrc.value = '';
+		return '';
 	}
 }
 
-/** Las acciones de la notificación actual, sin la que dispara el clic. */
-const actions = computed<Action[]>(() => {
-	const raw = current.value?.actions ?? [];
+/** Las acciones de una notificación, sin la que dispara el clic. */
+function actionsOf(notification: FlareNotification): Action[] {
+	const raw = notification.actions ?? [];
 	const result: Action[] = [];
 	for (let i = 0; i < raw.length; i += 2) {
 		const key = raw[i];
@@ -66,11 +114,74 @@ const actions = computed<Action[]>(() => {
 		result.push({ key, label: raw[i + 1] || key });
 	}
 	return result;
-});
+}
 
-const hasDefaultAction = computed(() =>
-	(current.value?.actions ?? []).some((value, index) => index % 2 === 0 && value === DEFAULT_ACTION),
-);
+function hasDefaultAction(notification: FlareNotification): boolean {
+	return (notification.actions ?? []).some(
+		(value, index) => index % 2 === 0 && value === DEFAULT_ACTION
+	);
+}
+
+function clearTimer(banner: Banner) {
+	if (banner.timer) {
+		clearTimeout(banner.timer);
+		banner.timer = null;
+	}
+}
+
+/**
+ * Ajusta la ventana al alto que ocupa la pila.
+ *
+ * La ventana layer-shell no se estira sola: si midiera siempre lo mismo, o
+ * recortaría los carteles o dejaría un rectángulo invisible que igual se come
+ * los clics del escritorio.
+ */
+async function fitWindow() {
+	if (!banners.value.length) return;
+	const element = stack.value;
+	if (!element) return;
+	const height = Math.ceil(element.getBoundingClientRect().height);
+	if (height <= 0 || height === lastHeight) return;
+	lastHeight = height;
+	await invoke('resize_banner', { width: BANNER_WIDTH, height }).catch((error) => {
+		console.error('No se pudo ajustar el tamaño del cartel', error);
+	});
+}
+
+/** Muestra u oculta la ventana según haya o no notificaciones, y la mide. */
+async function syncWindow() {
+	if (!banners.value.length) {
+		lastHeight = 0;
+		await invoke('hide_banner').catch(() => {});
+		return;
+	}
+	await invoke('show_banner').catch(() => {});
+	await nextTick();
+	await fitWindow();
+}
+
+/** Saca un cartel de la pila. No avisa a nadie: eso lo deciden quienes llaman. */
+async function drop(notifId: number) {
+	const index = banners.value.findIndex((banner) => banner.notification.notif_id === notifId);
+	if (index < 0) return;
+	const [removed] = banners.value.splice(index, 1);
+	clearTimer(removed);
+	await syncWindow();
+}
+
+/**
+ * Cierra el cartel a mano y da la notificación por leída.
+ *
+ * Cerrar es la forma de decir «ya la vi»: si no marcara leída, el contador del
+ * escritorio seguiría avisando por algo que la persona acaba de descartar.
+ */
+async function dismiss(banner: Banner) {
+	const { id, notif_id: notifId } = banner.notification;
+	await drop(notifId);
+	await invoke('dismiss_notification', { id, notifId }).catch((error) => {
+		console.error('No se pudo descartar la notificación', error);
+	});
+}
 
 /**
  * Ejecuta una acción y cierra el cartel.
@@ -78,98 +189,147 @@ const hasDefaultAction = computed(() =>
  * El cartel se va igual aunque la acción falle: dejarlo puesto después de que
  * alguien lo tocó es peor que perder la acción.
  */
-async function activate(actionKey: string) {
-	const notifId = current.value?.notif_id;
-	await hide();
-	if (notifId === undefined) return;
-	await invoke('activate_notification', { notifId, actionKey }).catch((error) => {
+async function activate(banner: Banner, actionKey: string) {
+	const { id, notif_id: notifId } = banner.notification;
+	await drop(notifId);
+	await invoke('activate_notification', { notifId, actionKey, id }).catch((error) => {
 		console.error('No se pudo ejecutar la acción de la notificación', error);
 	});
 }
 
 /** El clic en el cartel: la acción por omisión si la hay, y si no, cerrarlo. */
-async function clicked() {
-	if (hasDefaultAction.value) {
-		await activate(DEFAULT_ACTION);
+async function clicked(banner: Banner) {
+	if (hasDefaultAction(banner.notification)) {
+		await activate(banner, DEFAULT_ACTION);
 		return;
 	}
-	await hide();
+	await dismiss(banner);
 }
 
-function clearHide() {
-	if (hideTimer) {
-		clearTimeout(hideTimer);
-		hideTimer = null;
+/** Agrega (o reemplaza, si la aplicación usó replaces_id) una notificación. */
+async function push(notification: FlareNotification) {
+	const icon = await resolveIcon(notification.app_icon);
+	const banner: Banner = { notification, icon, timer: null };
+	const index = banners.value.findIndex(
+		(item) => item.notification.notif_id === notification.notif_id
+	);
+	if (index >= 0) {
+		clearTimer(banners.value[index]);
+		banners.value[index] = banner;
+	} else {
+		banners.value.push(banner);
+		while (banners.value.length > QUEUE_LIMIT) {
+			const dropped = banners.value.shift();
+			if (dropped) clearTimer(dropped);
+		}
 	}
-}
-
-async function hide() {
-	clearHide();
-	current.value = null;
-	await invoke('hide_banner').catch(() => {});
-}
-
-async function show(n: FlareNotification) {
-	current.value = n;
-	await resolveIcon(n.app_icon);
-	await invoke('show_banner').catch(() => {});
-	clearHide();
-	// Critical notifications stay until dismissed.
-	if (n.urgency < 2) {
-		hideTimer = setTimeout(() => void hide(), HIDE_MS);
+	// Las críticas se quedan hasta que alguien las cierre.
+	if (notification.urgency < 2) {
+		banner.timer = setTimeout(() => void drop(notification.notif_id), HIDE_MS);
 	}
+	await syncWindow();
 }
 
 onMounted(async () => {
 	// Load the theme (dark/light + scheme) like the rest of VasakOS.
 	try {
-		const configStore = useConfigStore() as Store<'config', { config: any; loadConfig: () => Promise<void> }>;
+		const configStore = useConfigStore() as Store<
+			'config',
+			{ config: any; loadConfig: () => Promise<void> }
+		>;
 		await configStore.loadConfig();
 		unlisteners.push(await listen('config-changed', () => void configStore.loadConfig()));
 	} catch (error) {
 		console.error('Error al cargar configuración', error);
 	}
 
+	// El alto definitivo se conoce tarde: recién cuando cargó el ícono y el
+	// texto terminó de acomodarse. Medir una sola vez dejaba carteles cortados.
+	if (typeof ResizeObserver !== 'undefined' && stack.value) {
+		sizeObserver = new ResizeObserver(() => void fitWindow());
+		sizeObserver.observe(stack.value);
+	}
+
 	unlisteners.push(
 		await listen<FlareNotification>('notification://new', (event) => {
-			void show(event.payload);
+			void push(event.payload);
 		})
 	);
 	unlisteners.push(
 		await listen<number>('notification://close', (event) => {
-			if (current.value && current.value.notif_id === event.payload) void hide();
+			void drop(event.payload);
 		})
 	);
 });
 
 onUnmounted(() => {
-	unlisteners.forEach((u) => u());
-	clearHide();
+	for (const unlisten of unlisteners) unlisten();
+	sizeObserver?.disconnect();
+	for (const banner of banners.value) clearTimer(banner);
 });
 </script>
 
 <template>
-  <div
-    v-if="current"
-    class="flex h-screen cursor-pointer items-start gap-3 overflow-hidden rounded-corner bg-ui-bg/95 p-3 shadow-xl"
-    @click="clicked"
-  >
-    <img v-if="iconSrc" :src="iconSrc" class="h-10 w-10 shrink-0" alt="" />
-    <div class="min-w-0 flex-1">
-      <p class="mb-0.5 text-[11px] uppercase tracking-wide text-tx-muted">{{ current.app_name }}</p>
-      <p class="truncate font-semibold text-tx-main">{{ current.summary }}</p>
-      <p v-if="current.body" class="mt-0.5 line-clamp-2 text-sm text-tx-muted">{{ current.body }}</p>
-      <!-- Las demás acciones, como botones. Antes no había forma de llegar a
-           ellas: el cartel desaparecía a los cinco segundos. -->
-      <div v-if="actions.length" class="mt-2 flex flex-wrap gap-2" @click.stop>
-        <button
-          v-for="action in actions"
-          :key="action.key"
-          class="rounded-corner border border-ui-border px-2 py-1 text-xs text-tx-main transition-colors hover:bg-ui-surface"
-          @click="activate(action.key)"
-        >
-          {{ action.label }}
-        </button>
+  <!-- La pila crece hacia arriba: la ventana está anclada abajo a la derecha, así
+       que la notificación más nueva queda siempre en la misma esquina. -->
+  <div ref="stack" class="fixed inset-x-0 bottom-0 flex flex-col items-stretch gap-2">
+    <!-- Cuántas quedaron atrás. Sin esto, una notificación tapaba a la otra sin
+         que se notara que había más de una. -->
+    <div
+      v-if="hiddenCount"
+      class="self-center rounded-corner border border-ui-border bg-ui-bg/80 px-2 py-0.5 text-[11px] font-semibold text-tx-muted shadow-lg backdrop-blur-lg"
+      :aria-label="`${hiddenCount} notificaciones más`"
+      :title="`${hiddenCount} notificaciones más`"
+    >
+      +{{ hiddenCount }}
+    </div>
+    <div
+      v-for="banner in visible"
+      :key="banner.notification.notif_id"
+      class="flex cursor-pointer items-start gap-3 overflow-hidden rounded-corner border border-ui-border bg-ui-bg/80 p-3 shadow-lg backdrop-blur-lg"
+      @click="clicked(banner)"
+    >
+      <img v-if="banner.icon" :src="banner.icon" class="h-10 w-10 shrink-0" alt="" />
+      <div class="min-w-0 flex-1">
+        <div class="flex items-start gap-2">
+          <p class="min-w-0 flex-1 truncate text-[11px] uppercase tracking-wide text-tx-muted">
+            {{ banner.notification.app_name }}
+          </p>
+          <!-- Cerrar a mano: hasta ahora la única salida era esperar los cinco
+               segundos, y las críticas no se iban nunca. -->
+          <button
+            class="-mr-1 -mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-corner text-tx-muted transition-colors hover:bg-ui-surface hover:text-tx-main"
+            aria-label="Cerrar notificación"
+            title="Cerrar notificación"
+            @click.stop="dismiss(banner)"
+          >
+            <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" aria-hidden="true">
+              <path
+                d="M4.5 4.5l7 7M11.5 4.5l-7 7"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+        </div>
+        <p class="truncate font-semibold text-tx-main">{{ banner.notification.summary }}</p>
+        <p v-if="banner.notification.body" class="mt-0.5 line-clamp-3 text-sm text-tx-muted">
+          {{ banner.notification.body }}
+        </p>
+        <!-- Las demás acciones, como botones. Antes no había forma de llegar a
+             ellas: el cartel desaparecía a los cinco segundos. -->
+        <div v-if="actionsOf(banner.notification).length" class="mt-2 flex flex-wrap gap-2" @click.stop>
+          <button
+            v-for="action in actionsOf(banner.notification)"
+            :key="action.key"
+            class="rounded-corner border border-ui-border px-2 py-1 text-xs text-tx-main transition-colors hover:bg-ui-surface"
+            @click="activate(banner, action.key)"
+          >
+            {{ action.label }}
+          </button>
+        </div>
       </div>
     </div>
   </div>

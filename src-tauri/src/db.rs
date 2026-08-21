@@ -34,28 +34,38 @@ fn data_dir() -> PathBuf {
     base.join("vasak-flare-daemon")
 }
 
+const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        notif_id INTEGER NOT NULL,
+        app_name TEXT NOT NULL,
+        app_icon TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        body TEXT NOT NULL,
+        urgency INTEGER NOT NULL,
+        actions TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        read INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_notif_id ON notifications(notif_id);
+    CREATE INDEX IF NOT EXISTS idx_read ON notifications(read);";
+
 impl Db {
     pub fn new() -> rusqlite::Result<Self> {
         let dir = data_dir();
         let _ = std::fs::create_dir_all(&dir);
         let conn = Connection::open(dir.join("notifications.db"))?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS notifications (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                notif_id INTEGER NOT NULL,
-                app_name TEXT NOT NULL,
-                app_icon TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                body TEXT NOT NULL,
-                urgency INTEGER NOT NULL,
-                actions TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                read INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE INDEX IF NOT EXISTS idx_notif_id ON notifications(notif_id);
-            CREATE INDEX IF NOT EXISTS idx_read ON notifications(read);",
-        )?;
+        Self::with_connection(conn)
+    }
+
+    /// Una base en memoria, para las pruebas: mismo esquema, sin tocar el disco.
+    #[cfg(test)]
+    pub fn in_memory() -> rusqlite::Result<Self> {
+        Self::with_connection(Connection::open_in_memory()?)
+    }
+
+    fn with_connection(conn: Connection) -> rusqlite::Result<Self> {
+        conn.execute_batch(SCHEMA)?;
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -176,5 +186,90 @@ impl Db {
     pub fn clear_all(&self) -> rusqlite::Result<()> {
         self.conn.lock().unwrap().execute("DELETE FROM notifications", [])?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(notif_id: u32, summary: &str) -> StoredNotification {
+        StoredNotification {
+            id: 0,
+            notif_id,
+            app_name: "prueba".into(),
+            app_icon: String::new(),
+            summary: summary.into(),
+            body: "cuerpo".into(),
+            urgency: 1,
+            actions: vec!["default".into(), "Abrir".into()],
+            created_at: 1_700_000_000,
+            read: false,
+        }
+    }
+
+    /// Cerrar un cartel a mano marca leída sólo esa notificación: el contador de
+    /// pendientes del escritorio no puede bajar de más.
+    #[test]
+    fn mark_read_solo_afecta_a_la_notificacion_pedida() {
+        let db = Db::in_memory().unwrap();
+        let primera = db.insert(&sample(1, "una")).unwrap();
+        db.insert(&sample(2, "otra")).unwrap();
+        assert_eq!(db.unread_count().unwrap(), 2);
+
+        db.mark_read(primera).unwrap();
+
+        assert_eq!(db.unread_count().unwrap(), 1);
+        let pendientes = db.list(true, 10).unwrap();
+        assert_eq!(pendientes.len(), 1);
+        assert_eq!(pendientes[0].summary, "otra");
+    }
+
+    /// El botón de cerrar sólo tiene el id de historial que vino en el evento;
+    /// desde ahí hay que poder llegar al id de freedesktop para avisar a la app.
+    #[test]
+    fn el_id_de_historial_lleva_al_id_de_freedesktop() {
+        let db = Db::in_memory().unwrap();
+        let history_id = db.insert(&sample(42, "una")).unwrap();
+
+        assert_eq!(db.notif_id_for_history(history_id).unwrap(), Some(42));
+        assert_eq!(db.notif_id_for_history(history_id + 999).unwrap(), None);
+    }
+
+    /// Marcar leída una notificación que ya no existe no puede fallar: el cartel
+    /// puede sobrevivir a un borrado del historial.
+    #[test]
+    fn mark_read_de_algo_inexistente_no_falla() {
+        let db = Db::in_memory().unwrap();
+        assert!(db.mark_read(1234).is_ok());
+    }
+
+    /// Reemplazar por `replaces_id` reusa la fila y la vuelve a dejar pendiente:
+    /// una notificación de progreso no debe llenar el historial de entradas.
+    #[test]
+    fn replaces_id_reusa_la_fila_y_la_deja_pendiente() {
+        let db = Db::in_memory().unwrap();
+        let history_id = db.insert(&sample(7, "primera")).unwrap();
+        db.mark_read(history_id).unwrap();
+        assert_eq!(db.unread_count().unwrap(), 0);
+
+        assert!(db.update_by_notif_id(&sample(7, "segunda")).unwrap());
+
+        let todas = db.list(false, 10).unwrap();
+        assert_eq!(todas.len(), 1);
+        assert_eq!(todas[0].summary, "segunda");
+        assert_eq!(db.unread_count().unwrap(), 1);
+        assert_eq!(db.latest_id_for_notif(7).unwrap(), Some(history_id));
+    }
+
+    /// Las acciones viajan como JSON en una columna de texto: si el ida y vuelta
+    /// se rompiera, los botones del cartel desaparecerían del historial.
+    #[test]
+    fn las_acciones_sobreviven_al_ida_y_vuelta() {
+        let db = Db::in_memory().unwrap();
+        db.insert(&sample(1, "una")).unwrap();
+
+        let guardada = &db.list(false, 10).unwrap()[0];
+        assert_eq!(guardada.actions, vec!["default".to_string(), "Abrir".to_string()]);
     }
 }

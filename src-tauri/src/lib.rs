@@ -7,6 +7,20 @@ use std::sync::Arc;
 use gtk::prelude::*;
 use tauri::{AppHandle, Manager, WebviewWindow};
 
+use db::Db;
+
+/// Ancho de la pila de carteles. Tiene que coincidir con `BANNER_WIDTH` de la
+/// interfaz: es el ancho que hace que los botones de acción no pisen el texto.
+const BANNER_WIDTH: i32 = 420;
+
+/// Alto de arranque: un cartel corto. Después lo ajusta `resize_banner`.
+const BANNER_MIN_HEIGHT: i32 = 72;
+
+/// Techos y pisos absolutos, por si la interfaz pide algo disparatado.
+const BANNER_MIN_WIDTH: i32 = 240;
+const BANNER_MAX_WIDTH: i32 = 800;
+const BANNER_MAX_HEIGHT: i32 = 1200;
+
 thread_local! {
     // The gtk-layer-shell window hosting the banner webview (main thread only).
     static BANNER_WIN: RefCell<Option<gtk::Window>> = const { RefCell::new(None) };
@@ -19,10 +33,61 @@ thread_local! {
 /// front did nothing. The identifier is the freedesktop one, which is what the
 /// application that sent the notification knows about.
 #[tauri::command]
-async fn activate_notification(notif_id: u32, action_key: String) {
+async fn activate_notification(app: AppHandle, notif_id: u32, action_key: String, id: Option<i64>) {
     server::emit_action(notif_id, &action_key).await;
+    // Quien actúa sobre una notificación ya la vio: no tiene sentido que siga
+    // contando como pendiente en el historial del escritorio.
+    if let Some(history_id) = id {
+        mark_read(&app, history_id).await;
+    }
     // Y se da por cerrada: quien la mandó tiene que dejar de esperarla.
     server::emit_dismissed(notif_id).await;
+}
+
+/// Cerrar el cartel a mano: la notificación queda leída y dada por cerrada.
+///
+/// Antes el cartel sólo se podía dejar pasar (se iba a los cinco segundos), así
+/// que no había ningún gesto que significara «ya la vi». El botón de cerrar es
+/// ese gesto, y por eso además la marca leída.
+#[tauri::command]
+async fn dismiss_notification(app: AppHandle, id: i64, notif_id: u32) {
+    mark_read(&app, id).await;
+    server::emit_dismissed(notif_id).await;
+}
+
+/// Marca leída una notificación del historial, si la base pudo abrirse.
+async fn mark_read(app: &AppHandle, history_id: i64) {
+    let db = app.try_state::<Arc<Db>>().map(|state| state.inner().clone());
+    if let Some(db) = db {
+        server::mark_read(&db, history_id).await;
+    }
+}
+
+/// Ajusta la ventana del cartel al alto que ocupa la pila.
+///
+/// La ventana layer-shell no crece con su contenido: con un alto fijo, o
+/// recortaba los carteles apilados o dejaba un rectángulo transparente que
+/// igual se comía los clics del escritorio.
+#[tauri::command]
+fn resize_banner(app: AppHandle, width: i32, height: i32) -> Result<(), String> {
+    let (width, height) = banner_size(width, height);
+    app.run_on_main_thread(move || {
+        BANNER_WIN.with(|w| {
+            if let Some(win) = w.borrow().as_ref() {
+                win.set_size_request(width, height);
+                win.resize(width, height);
+            }
+        });
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Acota lo que pide la interfaz a algo que se pueda mostrar en una pantalla.
+fn banner_size(width: i32, height: i32) -> (i32, i32) {
+    (
+        width.clamp(BANNER_MIN_WIDTH, BANNER_MAX_WIDTH),
+        height.clamp(BANNER_MIN_HEIGHT, BANNER_MAX_HEIGHT),
+    )
 }
 
 #[tauri::command]
@@ -66,8 +131,8 @@ fn setup_banner_layer(window: &WebviewWindow) {
 
     let layer_win = gtk::Window::new(gtk::WindowType::Toplevel);
     layer_win.set_decorated(false);
-    layer_win.set_default_size(380, 120);
-    layer_win.set_size_request(380, 120);
+    layer_win.set_default_size(BANNER_WIDTH, BANNER_MIN_HEIGHT);
+    layer_win.set_size_request(BANNER_WIDTH, BANNER_MIN_HEIGHT);
 
     layer_win.init_layer_shell();
     layer_win.set_namespace("vasak-flare");
@@ -96,6 +161,9 @@ fn setup_banner_layer(window: &WebviewWindow) {
         if let Ok(container) = child.dynamic_cast::<gtk::Container>() {
             if let Some(webview) = container.children().first() {
                 container.remove(webview);
+                // Sin pedido de tamaño propio: el que manda es el de la ventana,
+                // que cambia con la cantidad de carteles apilados.
+                webview.set_size_request(-1, -1);
                 layer_win.add(webview);
                 gtk_win.hide();
                 BANNER_WIN.with(|w| *w.borrow_mut() = Some(layer_win));
@@ -112,7 +180,13 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_config_manager::init())
         .plugin(tauri_plugin_vicons::init())
-        .invoke_handler(tauri::generate_handler![show_banner, hide_banner, activate_notification])
+        .invoke_handler(tauri::generate_handler![
+            show_banner,
+            hide_banner,
+            resize_banner,
+            activate_notification,
+            dismiss_notification
+        ])
         .setup(|app| {
             // Reparent the banner into a layer-shell overlay (kept hidden until
             // a notification arrives; the UI calls show_banner/hide_banner).
@@ -123,6 +197,9 @@ pub fn run() {
             match db::Db::new() {
                 Ok(database) => {
                     let db = Arc::new(database);
+                    // También queda a mano de los comandos: el botón de cerrar
+                    // necesita marcar leída la notificación.
+                    app.manage(db.clone());
                     let app_handle = app.handle().clone();
                     tauri::async_runtime::spawn(async move {
                         if let Err(e) = server::start_server(db, app_handle).await {
@@ -137,4 +214,30 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// El alto lo mide la interfaz, así que puede llegar cualquier cosa: un cero
+    /// mientras se acomoda el texto, o una pila más alta que la pantalla.
+    #[test]
+    fn el_tamano_del_cartel_queda_dentro_de_lo_mostrable() {
+        assert_eq!(banner_size(BANNER_WIDTH, 0), (BANNER_WIDTH, BANNER_MIN_HEIGHT));
+        assert_eq!(banner_size(BANNER_WIDTH, -40), (BANNER_WIDTH, BANNER_MIN_HEIGHT));
+        assert_eq!(
+            banner_size(BANNER_WIDTH, 99_999),
+            (BANNER_WIDTH, BANNER_MAX_HEIGHT)
+        );
+        assert_eq!(banner_size(10, 300), (BANNER_MIN_WIDTH, 300));
+        assert_eq!(banner_size(4000, 300), (BANNER_MAX_WIDTH, 300));
+    }
+
+    /// Un alto razonable pasa tal cual: la pila tiene que poder crecer con los
+    /// carteles que se apilan.
+    #[test]
+    fn un_alto_razonable_pasa_sin_tocar() {
+        assert_eq!(banner_size(BANNER_WIDTH, 452), (BANNER_WIDTH, 452));
+    }
 }

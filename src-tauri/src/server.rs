@@ -99,6 +99,19 @@ pub async fn emit_dismissed(notif_id: u32) {
     emit_closed(notif_id, 2).await;
 }
 
+/// Da por leída una notificación del historial y avisa a quien lo esté mirando.
+///
+/// Lo mismo que hace el método `MarkRead` de D-Bus, pero accesible desde los
+/// comandos del cartel: cerrarlo a mano tiene que apagar el pendiente, si no el
+/// escritorio sigue avisando por algo que la persona ya descartó.
+pub async fn mark_read(db: &Db, history_id: i64) {
+    if let Err(e) = db.mark_read(history_id) {
+        eprintln!("[flare] could not mark notification {history_id} as read: {e}");
+        return;
+    }
+    emit_changed().await;
+}
+
 /// Notify subscribers (the desktop history view) that the store changed.
 async fn emit_changed() {
     if let Some(conn) = CONN.get() {
@@ -313,4 +326,32 @@ pub async fn start_server(db: Arc<Db>, app: AppHandle) -> Result<(), Box<dyn std
     // Keep the connection alive (and available to emit_closed / actions).
     let _ = CONN.set(connection);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn el_icono_explicito_gana() {
+        let hints = HashMap::new();
+        assert_eq!(resolve_icon("firefox".into(), "Firefox", &hints), "firefox");
+    }
+
+    /// Muchas aplicaciones no mandan `app_icon` pero sí la imagen por hint: sin
+    /// esto el cartel quedaba sin ícono.
+    #[test]
+    fn sin_icono_se_usa_la_imagen_del_hint() {
+        let mut hints = HashMap::new();
+        hints.insert("image-path".to_string(), Value::new("/tmp/foto.png"));
+        assert_eq!(resolve_icon(String::new(), "Cualquiera", &hints), "/tmp/foto.png");
+    }
+
+    #[test]
+    fn ultimo_recurso_el_nombre_de_la_aplicacion() {
+        let hints = HashMap::new();
+        assert_eq!(resolve_icon(String::new(), "Telegram Desktop", &hints), "telegram-desktop");
+        assert_eq!(resolve_icon(String::new(), "Google Chrome", &hints), "google-chrome");
+        assert_eq!(resolve_icon(String::new(), "Resonance", &hints), "resonance");
+    }
 }
