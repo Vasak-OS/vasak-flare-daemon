@@ -14,8 +14,8 @@
       {
         "label": "banner",
         "title": "vasak-flare-daemon",
-        "width": 380,
-        "height": 120,
+        "width": 420,
+        "height": 72,
         "decorations": false,
         "transparent": true,
         "skipTaskbar": true,
