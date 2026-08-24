@@ -3,8 +3,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useConfigStore } from '@vasakgroup/plugin-config-manager';
 import { getIconSource } from '@vasakgroup/plugin-vicons';
+import { useI18n } from '@vasakgroup/tauri-plugin-i18n';
 import type { Store } from 'pinia';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
+
+const { t } = useI18n();
 
 interface FlareNotification {
 	id: number;
@@ -278,8 +281,8 @@ onUnmounted(() => {
     <div
       v-if="hiddenCount"
       class="self-center rounded-corner border border-ui-border bg-ui-bg/80 px-2 py-0.5 text-[11px] font-semibold text-tx-muted shadow-lg backdrop-blur-lg"
-      :aria-label="`${hiddenCount} notificaciones más`"
-      :title="`${hiddenCount} notificaciones más`"
+      :aria-label="t('banner.more').replace('{0}', String(hiddenCount))"
+      :title="t('banner.more').replace('{0}', String(hiddenCount))"
     >
       +{{ hiddenCount }}
     </div>
@@ -299,8 +302,8 @@ onUnmounted(() => {
                segundos, y las críticas no se iban nunca. -->
           <button
             class="-mr-1 -mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-corner text-tx-muted transition-colors hover:bg-ui-surface hover:text-tx-main"
-            aria-label="Cerrar notificación"
-            title="Cerrar notificación"
+            :aria-label="t('banner.close')"
+            :title="t('banner.close')"
             @click.stop="dismiss(banner)"
           >
             <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" aria-hidden="true">

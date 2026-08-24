@@ -31,6 +31,7 @@ zbus = { version = "4", features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 rusqlite = { version = "0.31" }
 chrono = { version = "0.4", features = ["serde"] }
+tauri-plugin-i18n-vsk = "2.1.1"
 
 [profile.dev]
 incremental = true # Compile your binary in smaller steps.
