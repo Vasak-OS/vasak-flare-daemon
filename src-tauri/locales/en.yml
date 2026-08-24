@@ -1,0 +1,10 @@
+_version: 1
+
+banner:
+  close: Dismiss the notification
+  more: "{0} more notifications"
+
+window:
+  minimize: Minimise
+  maximize: Maximise
+  close: Close

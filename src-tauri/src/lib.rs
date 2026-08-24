@@ -2,6 +2,7 @@ mod db;
 mod server;
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gtk::prelude::*;
@@ -20,6 +21,44 @@ const BANNER_MIN_HEIGHT: i32 = 72;
 const BANNER_MIN_WIDTH: i32 = 240;
 const BANNER_MAX_WIDTH: i32 = 800;
 const BANNER_MAX_HEIGHT: i32 = 1200;
+
+/// Dónde están los archivos de idioma.
+///
+/// El plugin sólo prueba rutas relativas al ejecutable y al directorio de
+/// trabajo, y ninguna de esas existe cuando el binario está instalado en
+/// /usr/bin: sin esto, un paquete instalado muestra las claves crudas.
+fn locales_dir() -> Option<String> {
+    let candidatos = [
+        PathBuf::from("locales"),
+        PathBuf::from("src-tauri/locales"),
+        PathBuf::from("/usr/share/vasak-flare-daemon/locales"),
+    ];
+
+    candidatos
+        .into_iter()
+        .find(|ruta| ruta.is_dir())
+        .map(|ruta| ruta.to_string_lossy().to_string())
+}
+
+/// El idioma del sistema, o español.
+///
+/// Las variables vacías no cuentan: `LC_ALL=""` junto a `LANG=en_US.UTF-8` es
+/// una máquina en inglés, y quedarse con la vacía la dejaría en español.
+fn default_locale() -> String {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .filter_map(|nombre| std::env::var(nombre).ok())
+        .find(|valor| !valor.trim().is_empty())
+        .and_then(|valor| {
+            valor
+                .split(['_', '.', '@'])
+                .next()
+                .filter(|idioma| !idioma.is_empty())
+                .map(str::to_string)
+        })
+        .filter(|idioma| idioma == "en" || idioma == "es")
+        .unwrap_or_else(|| "es".to_string())
+}
 
 thread_local! {
     // The gtk-layer-shell window hosting the banner webview (main thread only).
@@ -177,6 +216,10 @@ fn setup_banner_layer(window: &WebviewWindow) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_i18n_vsk::init_with_path(
+            Some(default_locale()),
+            locales_dir(),
+        ))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_config_manager::init())
         .plugin(tauri_plugin_vicons::init())
