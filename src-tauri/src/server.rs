@@ -214,8 +214,16 @@ impl NotificationServer {
             t => Some(t as u64),
         };
         if let Some(ms) = expire_ms {
+            let app = self.state.app.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                // El mismo camino que el cierre explícito, y no sólo la señal de
+                // D-Bus: si la notificación expiraba antes de que el frontend
+                // reclamara la cola, `take_pending` la mostraba igual — un
+                // cartel que ya había vencido. Y la interfaz nunca se enteraba
+                // de que había que sacarlo.
+                crate::banner::drop_pending(id);
+                let _ = app.emit("notification://close", id);
                 emit_closed(id, 1).await;
             });
         }

@@ -60,6 +60,14 @@ static READY: AtomicBool = AtomicBool::new(false);
 static CREATING: AtomicBool = AtomicBool::new(false);
 /// Cambia con cada señal de vida; el desarme sólo procede si nadie la movió.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// Cambia **sólo** al construir un webview.
+///
+/// El vigilante del arranque no puede usar `GENERATION`: ésa se mueve con cada
+/// notificación, así que si el frontend nunca avisaba y entraba otra
+/// notificación antes de los cinco minutos, el vigilante se daba por vencido y
+/// nadie programaba otro. El webview roto quedaba residente y la cola crecía
+/// sin techo, que es justo lo que el vigilante venía a evitar.
+static CREATION: AtomicU64 = AtomicU64::new(0);
 
 /// Notificaciones que llegaron mientras el webview calentaba.
 static PENDING: Mutex<Vec<StoredNotification>> = Mutex::new(Vec::new());
@@ -126,7 +134,7 @@ pub fn schedule_teardown(app: &AppHandle) {
         tokio::time::sleep(idle()).await;
         if GENERATION.load(Ordering::SeqCst) == generation {
             traza("silencio: se desarma el cartel");
-            teardown(&app);
+            teardown(&app, Some(generation));
         } else {
             traza("hubo actividad: el cartel sigue vivo");
         }
@@ -185,14 +193,14 @@ fn ensure_created(app: &AppHandle) {
             // Si el frontend nunca llega a `banner_ready`, esto desarma el
             // webview roto en vez de dejarlo residente para siempre.
             let watchdog = app.clone();
-            let generation = GENERATION.load(Ordering::SeqCst);
+            let creacion = CREATION.fetch_add(1, Ordering::SeqCst) + 1;
             std::thread::spawn(move || {
                 std::thread::sleep(WARMUP_LIMIT);
                 if !READY.load(Ordering::SeqCst)
-                    && GENERATION.load(Ordering::SeqCst) == generation
+                    && CREATION.load(Ordering::SeqCst) == creacion
                 {
                     traza("el cartel nunca avisó que cargó; se desarma");
-                    teardown(&watchdog);
+                    teardown(&watchdog, None);
                 }
             });
 
@@ -212,9 +220,19 @@ fn ensure_created(app: &AppHandle) {
 /// destruirlo aunque viva re-parentado en la ventana de capa. Recién después
 /// se tira la cáscara de GTK, ya vacía. Al revés, GTK destruiría un widget que
 /// wry cree suyo, y ese doble dueño es un segfault en el hilo principal.
-fn teardown(app: &AppHandle) {
+fn teardown(app: &AppHandle, esperada: Option<u64>) {
     let app = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
+        // La generación se revalida **acá dentro**, no sólo antes de encolar
+        // este cierre. Entre una cosa y la otra `deliver` puede haber emitido
+        // —READY todavía en true, así que no encoló nada— y destruir la ventana
+        // en ese hueco perdía la notificación sin dejar rastro.
+        if let Some(esperada) = esperada {
+            if GENERATION.load(Ordering::SeqCst) != esperada {
+                traza("llegó algo mientras se desarmaba: se cancela");
+                return;
+            }
+        }
         READY.store(false, Ordering::SeqCst);
         if let Some(window) = app.get_webview_window("banner") {
             let _ = window.destroy();

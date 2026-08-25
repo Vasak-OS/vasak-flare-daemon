@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useConfigStore } from '@vasakgroup/plugin-config-manager';
 import { getIconSource } from '@vasakgroup/plugin-vicons';
@@ -98,7 +98,15 @@ const hiddenCount = computed(() => Math.max(0, banners.value.length - maxVisible
 async function resolveIcon(name: string): Promise<string> {
 	if (!name) return '';
 	if (name.startsWith('/') || name.startsWith('file://')) {
-		return name.startsWith('file://') ? name : `file://${name}`;
+		// Por el protocolo de assets, no como `file://`.
+		//
+		// La política de contenido no permite `file:`, así que un icono con ruta
+		// absoluta —lo que manda cualquier aplicación que pase su propio
+		// archivo— quedaba bloqueado y el cartel salía sin icono. Y permitir
+		// `file:` en `img-src` sería peor: dejaría que cualquier archivo local
+		// se cargue como imagen.
+		const ruta = name.startsWith('file://') ? name.slice('file://'.length) : name;
+		return convertFileSrc(ruta);
 	}
 	try {
 		return await getIconSource(name);
