@@ -10,20 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "label": "banner",
-        "title": "vasak-flare-daemon",
-        "width": 420,
-        "height": 72,
-        "decorations": false,
-        "transparent": true,
-        "skipTaskbar": true,
-        "resizable": false,
-        "alwaysOnTop": true,
-        "visible": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

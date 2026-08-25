@@ -202,7 +202,9 @@ impl NotificationServer {
         stored.id = row_id;
 
         // Tell the UI to show a banner, and the desktop history to refresh.
-        let _ = self.state.app.emit("notification://new", &stored);
+        // The banner webview may not exist yet — `deliver` creates it and
+        // queues this until the frontend is listening.
+        crate::banner::deliver(&self.state.app, &stored);
         emit_changed().await;
 
         // Auto-close: default (-1) => 5s (never for critical); 0 => never; else ms.
@@ -227,6 +229,8 @@ impl NotificationServer {
         #[zbus(signal_context)] ctxt: SignalContext<'_>,
     ) {
         let _ = Self::notification_closed(&ctxt, id, 3).await;
+        // Closed before the warming webview could show it: out of the queue.
+        crate::banner::drop_pending(id);
         let _ = self.state.app.emit("notification://close", id);
     }
 }

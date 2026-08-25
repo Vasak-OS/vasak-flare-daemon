@@ -263,6 +263,21 @@ onMounted(async () => {
 			void drop(event.payload);
 		})
 	);
+
+	// Este webview se crea recién cuando llega una notificación, así que la que
+	// motivó la creación —y las que aterrizaron mientras cargábamos— están
+	// encoladas en el backend, no en un evento que ya pasó. Reclamarlas es lo
+	// que las muestra; sin esto, el primer cartel de cada tanda no aparecería
+	// nunca. Va después de suscribirse a los eventos: al revés habría un hueco
+	// entre el drenado y el listener por donde se perdería una notificación.
+	try {
+		const pendientes = await invoke<FlareNotification[]>('banner_ready');
+		for (const notification of pendientes) {
+			void push(notification);
+		}
+	} catch (error) {
+		console.error('No se pudieron reclamar las notificaciones pendientes', error);
+	}
 });
 
 onUnmounted(() => {

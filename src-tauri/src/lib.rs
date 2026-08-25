@@ -1,3 +1,4 @@
+mod banner;
 mod db;
 mod server;
 
@@ -62,7 +63,7 @@ fn default_locale() -> String {
 
 thread_local! {
     // The gtk-layer-shell window hosting the banner webview (main thread only).
-    static BANNER_WIN: RefCell<Option<gtk::Window>> = const { RefCell::new(None) };
+    pub(crate) static BANNER_WIN: RefCell<Option<gtk::Window>> = const { RefCell::new(None) };
 }
 
 /// Carry out what a notification promised: the action the person clicked.
@@ -129,35 +130,59 @@ fn banner_size(width: i32, height: i32) -> (i32, i32) {
     )
 }
 
-#[tauri::command]
-fn show_banner(app: AppHandle) -> Result<(), String> {
-    app.run_on_main_thread(|| {
+/// Mapea la ventana de capa del cartel.
+///
+/// Separado del comando para que `banner.rs` lo pueda llamar al crearla: hasta
+/// que la ventana se mapea, el webview no carga la página.
+pub(crate) fn show_banner_window(app: &AppHandle) {
+    let _ = app.run_on_main_thread(|| {
         BANNER_WIN.with(|w| {
             if let Some(win) = w.borrow().as_ref() {
                 win.show_all();
             }
         });
-    })
-    .map_err(|e| e.to_string())
+    });
+}
+
+#[tauri::command]
+fn show_banner(app: AppHandle) -> Result<(), String> {
+    banner::keep_alive();
+    show_banner_window(&app);
+    Ok(())
 }
 
 #[tauri::command]
 fn hide_banner(app: AppHandle) -> Result<(), String> {
-    app.run_on_main_thread(|| {
-        BANNER_WIN.with(|w| {
-            if let Some(win) = w.borrow().as_ref() {
-                win.hide();
+    let result = app
+        .run_on_main_thread({
+            let _app = app.clone();
+            move || {
+                BANNER_WIN.with(|w| {
+                    if let Some(win) = w.borrow().as_ref() {
+                        win.hide();
+                    }
+                });
             }
-        });
-    })
-    .map_err(|e| e.to_string())
+        })
+        .map_err(|e| e.to_string());
+    // Se escondió el último cartel: si no llega nada en un rato, el webview
+    // entero se desarma y el demonio vuelve a no costar nada.
+    banner::schedule_teardown(&app);
+    result
+}
+
+/// El frontend del cartel terminó de montar: se lleva lo que llegó mientras
+/// cargaba. Ver el comentario de módulo de `banner.rs`.
+#[tauri::command]
+fn banner_ready() -> Vec<db::StoredNotification> {
+    banner::take_pending()
 }
 
 /// Reparent the banner webview into a wlr-layer-shell window anchored
 /// bottom-right, so the notification banner is positioned correctly on Wayland
 /// (clients can't place ordinary toplevels). Mirrors the vasak-terminal overlay
 /// approach.
-fn setup_banner_layer(window: &WebviewWindow) {
+pub(crate) fn setup_banner_layer(window: &WebviewWindow) {
     let gtk_win = match window.gtk_window() {
         Ok(w) => w,
         Err(e) => {
@@ -226,17 +251,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             show_banner,
             hide_banner,
+            banner_ready,
             resize_banner,
             activate_notification,
             dismiss_notification
         ])
         .setup(|app| {
-            // Reparent the banner into a layer-shell overlay (kept hidden until
-            // a notification arrives; the UI calls show_banner/hide_banner).
-            if let Some(win) = app.get_webview_window("banner") {
-                setup_banner_layer(&win);
-            }
-
+            // La ventana del cartel no existe todavía: se construye con la
+            // primera notificación (banner.rs) y se desarma tras el silencio.
+            // Arrancar sin ella es el punto — sin webview no hay WebKit
+            // residente, y este proceso queda en el costo de un demonio Rust.
             match db::Db::new() {
                 Ok(database) => {
                     let db = Arc::new(database);
