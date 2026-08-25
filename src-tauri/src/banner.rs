@@ -142,65 +142,68 @@ fn ensure_created(app: &AppHandle) {
     }
 
     let app = app.clone();
-    // En Linux la ventana se construye en el hilo principal de GTK; desde el
-    // executor de zbus esto explota o se cuelga según el día.
-    let main = app.clone();
-    let result = main.run_on_main_thread(move || {
-        // Los mismos valores que declaraba `tauri.conf.json` cuando la ventana
-        // era permanente; la única diferencia es cuándo se construye.
-        let built = WebviewWindowBuilder::new(&app, "banner", WebviewUrl::default())
-            .title("vasak-flare-daemon")
-            .inner_size(420.0, 72.0)
-            .decorations(false)
-            .transparent(true)
-            .skip_taskbar(true)
-            .resizable(false)
-            .always_on_top(true)
-            .visible(false)
-            .on_page_load(|_window, payload| {
-                traza(&format!("página del cartel: {:?}", payload.event()));
-            })
-            .build();
+    // Se construye desde este hilo, **no** dentro de `run_on_main_thread`.
+    //
+    // Tauri despacha la creación al bucle de eventos por su cuenta. Hacerlo a
+    // mano desde dentro de una vuelta del bucle de GTK reentra en él, y el
+    // webview quedaba a medio inicializar: la página cargaba —`Started` y
+    // `Finished` llegaban— pero su motor de JavaScript no ejecutaba nada, ni el
+    // módulo de la aplicación ni un `eval` inyectado desde Rust. Sin ese
+    // detalle esto parecía un problema del re-parenteo o de la carga de la
+    // página, y no era ninguno de los dos.
+    let built = WebviewWindowBuilder::new(&app, "banner", WebviewUrl::default())
+        .title("vasak-flare-daemon")
+        .inner_size(420.0, 72.0)
+        .decorations(false)
+        .transparent(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .always_on_top(true)
+        .visible(false)
+        .build();
 
-        match built {
-            Ok(window) => {
-                crate::setup_banner_layer(&window);
+    match built {
+        Ok(window) => {
+            // El re-parenteo va en el hilo principal, la construcción no.
+            //
+            // Son dos requisitos opuestos y hay que respetar los dos: crear el
+            // webview desde dentro del bucle de GTK lo deja sin motor de
+            // JavaScript, y tocar GTK desde otro hilo aborta con «GTK may only
+            // be used from the main thread». Así que se construye acá y el
+            // trabajo de GTK se despacha allá.
+            let handle = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(ventana) = handle.get_webview_window("banner") {
+                    crate::setup_banner_layer(&ventana);
+                }
+                // Mapear ahora, no cuando el frontend lo pida: una ventana sin
+                // mapear no carga la página, y sólo se llega acá porque hay algo
+                // que mostrar.
+                crate::show_banner_window(&handle);
+            });
 
-                // Mapear la ventana ahora, no cuando el frontend lo pida.
-                //
-                // Un webview cuya ventana nunca se mapeó no carga la página, así
-                // que Vue no montaba, no llamaba a `banner_ready` y nadie pedía
-                // mostrar: la ventana esperaba al frontend y el frontend esperaba
-                // a la ventana. La única razón por la que se llega acá es que hay
-                // una notificación para mostrar, así que mapearla es además lo
-                // que corresponde. Queda transparente y vacía los pocos
-                // milisegundos que tarda la página en montar.
-                crate::show_banner_window(&app);
+            // Si el frontend nunca llega a `banner_ready`, esto desarma el
+            // webview roto en vez de dejarlo residente para siempre.
+            let watchdog = app.clone();
+            let generation = GENERATION.load(Ordering::SeqCst);
+            std::thread::spawn(move || {
+                std::thread::sleep(WARMUP_LIMIT);
+                if !READY.load(Ordering::SeqCst)
+                    && GENERATION.load(Ordering::SeqCst) == generation
+                {
+                    traza("el cartel nunca avisó que cargó; se desarma");
+                    teardown(&watchdog);
+                }
+            });
 
-                // Si el frontend nunca llega a `banner_ready`, esto desarma el
-                // webview roto en vez de dejarlo residente para siempre.
-                let watchdog = app.clone();
-                let generation = GENERATION.load(Ordering::SeqCst);
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(WARMUP_LIMIT).await;
-                    if !READY.load(Ordering::SeqCst)
-                        && GENERATION.load(Ordering::SeqCst) == generation
-                    {
-                        eprintln!("[flare] el cartel nunca avisó que cargó; se desarma");
-                        teardown(&watchdog);
-                    }
-                });
-            }
-            Err(error) => {
-                eprintln!("[flare] no se pudo crear el cartel: {error}");
-            }
+            let _ = window;
         }
-        CREATING.store(false, Ordering::SeqCst);
-    });
-
-    if result.is_err() {
-        CREATING.store(false, Ordering::SeqCst);
+        Err(error) => {
+            eprintln!("[flare] no se pudo crear el cartel: {error}");
+        }
     }
+
+    CREATING.store(false, Ordering::SeqCst);
 }
 
 /// Desarma el webview y la ventana de capa, en ese orden.

@@ -171,6 +171,16 @@ fn hide_banner(app: AppHandle) -> Result<(), String> {
     result
 }
 
+/// Un error de la página, al mismo registro que el resto.
+///
+/// El webview no manda su consola a ningún lado: un fallo de JavaScript deja
+/// la aplicación sin montar y el cartel sin aparecer, sin una línea en ningún
+/// archivo. Esto es ese canal.
+#[tauri::command]
+fn trace_js(message: String) {
+    eprintln!("[flare/js] {message}");
+}
+
 /// El frontend del cartel terminó de montar: se lleva lo que llegó mientras
 /// cargaba. Ver el comentario de módulo de `banner.rs`.
 #[tauri::command]
@@ -252,6 +262,7 @@ pub fn run() {
             show_banner,
             hide_banner,
             banner_ready,
+            trace_js,
             resize_banner,
             activate_notification,
             dismiss_notification
@@ -279,8 +290,19 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, event| {
+            // Este proceso es un servicio, no una ventana.
+            //
+            // Tauri cierra la aplicación cuando se destruye la última ventana, y
+            // desde que el cartel se crea y se desarma bajo demanda eso pasa
+            // cada vez que hay silencio: el demonio se apagaba solo y las
+            // notificaciones siguientes no encontraban a nadie en el bus.
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                api.prevent_exit();
+            }
+        });
 }
 
 #[cfg(test)]

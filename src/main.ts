@@ -1,8 +1,23 @@
+import { invoke } from '@tauri-apps/api/core';
 import I18n from '@vasakgroup/tauri-plugin-i18n';
 import { createPinia } from 'pinia';
 import { createApp } from 'vue';
 import App from '@/App.vue';
 import '@/assets/main.css';
+
+/// Un fallo de JavaScript acá deja la aplicación sin montar y el cartel sin
+/// aparecer, y la consola del webview no va a ningún archivo. Se reenvía al
+/// registro del demonio para que el silencio no sea la única señal.
+const avisar = (que: string) => {
+	void invoke('trace_js', { message: que }).catch(() => {});
+};
+
+window.addEventListener('error', (evento) => {
+	avisar(`error: ${evento.message} (${evento.filename}:${evento.lineno})`);
+});
+window.addEventListener('unhandledrejection', (evento) => {
+	avisar(`promesa rechazada: ${String(evento.reason)}`);
+});
 
 const app = createApp(App);
 const pinia = createPinia();
@@ -22,11 +37,15 @@ await Promise.race([
 	I18n.getInstance()
 		.load()
 		.catch((error) => {
-			console.error('No se pudieron cargar las traducciones', error);
+			avisar(`no se pudieron cargar las traducciones: ${String(error)}`);
 		}),
 	new Promise((resolve) => setTimeout(resolve, PLAZO_TRADUCCIONES_MS)),
 ]);
 
 app.use(pinia);
+
+app.config.errorHandler = (error, _instancia, info) => {
+	avisar(`Vue falló en ${info}: ${String(error)}`);
+};
 
 app.mount('#app');
