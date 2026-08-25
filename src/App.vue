@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useConfigStore } from '@vasakgroup/plugin-config-manager';
 import { getIconSource } from '@vasakgroup/plugin-vicons';
@@ -98,7 +98,15 @@ const hiddenCount = computed(() => Math.max(0, banners.value.length - maxVisible
 async function resolveIcon(name: string): Promise<string> {
 	if (!name) return '';
 	if (name.startsWith('/') || name.startsWith('file://')) {
-		return name.startsWith('file://') ? name : `file://${name}`;
+		// Por el protocolo de assets, no como `file://`.
+		//
+		// La política de contenido no permite `file:`, así que un icono con ruta
+		// absoluta —lo que manda cualquier aplicación que pase su propio
+		// archivo— quedaba bloqueado y el cartel salía sin icono. Y permitir
+		// `file:` en `img-src` sería peor: dejaría que cualquier archivo local
+		// se cargue como imagen.
+		const ruta = name.startsWith('file://') ? name.slice('file://'.length) : name;
+		return convertFileSrc(ruta);
 	}
 	try {
 		return await getIconSource(name);
@@ -263,6 +271,21 @@ onMounted(async () => {
 			void drop(event.payload);
 		})
 	);
+
+	// Este webview se crea recién cuando llega una notificación, así que la que
+	// motivó la creación —y las que aterrizaron mientras cargábamos— están
+	// encoladas en el backend, no en un evento que ya pasó. Reclamarlas es lo
+	// que las muestra; sin esto, el primer cartel de cada tanda no aparecería
+	// nunca. Va después de suscribirse a los eventos: al revés habría un hueco
+	// entre el drenado y el listener por donde se perdería una notificación.
+	try {
+		const pendientes = await invoke<FlareNotification[]>('banner_ready');
+		for (const notification of pendientes) {
+			void push(notification);
+		}
+	} catch (error) {
+		console.error('No se pudieron reclamar las notificaciones pendientes', error);
+	}
 });
 
 onUnmounted(() => {

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::{AppHandle, Emitter};
 use zbus::object_server::SignalContext;
@@ -19,6 +19,15 @@ pub struct FlareState {
     db: Arc<Db>,
     app: AppHandle,
     next_id: AtomicU32,
+    /// Qué entrega es la vigente para cada id de notificación.
+    ///
+    /// Una notificación reemplazada con `replaces_id` conserva el id, así que
+    /// cada `notify` deja su propia tarea de expiración con el mismo id. Sin
+    /// esto, la tarea vieja cerraba la notificación **nueva** al vencer su
+    /// propio plazo: la saca de la cola y emite el cierre por una entrega que ya
+    /// no existe. Cada entrega se queda con su número y sólo cierra si sigue
+    /// siendo la vigente.
+    revisiones: Mutex<HashMap<u32, u64>>,
 }
 
 struct NotificationServer {
@@ -202,8 +211,23 @@ impl NotificationServer {
         stored.id = row_id;
 
         // Tell the UI to show a banner, and the desktop history to refresh.
-        let _ = self.state.app.emit("notification://new", &stored);
+        // The banner webview may not exist yet — `deliver` creates it and
+        // queues this until the frontend is listening.
+        crate::banner::deliver(&self.state.app, &stored);
         emit_changed().await;
+
+        // Número de esta entrega, para que su tarea de expiración no cierre una
+        // notificación más nueva con el mismo id.
+        let revision = {
+            let mut revisiones = self
+                .state
+                .revisiones
+                .lock()
+                .unwrap_or_else(|envenenado| envenenado.into_inner());
+            let actual = revisiones.entry(id).or_insert(0);
+            *actual += 1;
+            *actual
+        };
 
         // Auto-close: default (-1) => 5s (never for critical); 0 => never; else ms.
         let expire_ms: Option<u64> = match expire_timeout {
@@ -212,8 +236,29 @@ impl NotificationServer {
             t => Some(t as u64),
         };
         if let Some(ms) = expire_ms {
+            let app = self.state.app.clone();
+            let estado = self.state.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+
+                // Si llegó un reemplazo, esta tarea ya no manda.
+                let vigente = estado
+                    .revisiones
+                    .lock()
+                    .unwrap_or_else(|envenenado| envenenado.into_inner())
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(0);
+                if vigente != revision {
+                    return;
+                }
+                // El mismo camino que el cierre explícito, y no sólo la señal de
+                // D-Bus: si la notificación expiraba antes de que el frontend
+                // reclamara la cola, `take_pending` la mostraba igual — un
+                // cartel que ya había vencido. Y la interfaz nunca se enteraba
+                // de que había que sacarlo.
+                crate::banner::drop_pending(id);
+                let _ = app.emit("notification://close", id);
                 emit_closed(id, 1).await;
             });
         }
@@ -227,6 +272,8 @@ impl NotificationServer {
         #[zbus(signal_context)] ctxt: SignalContext<'_>,
     ) {
         let _ = Self::notification_closed(&ctxt, id, 3).await;
+        // Closed before the warming webview could show it: out of the queue.
+        crate::banner::drop_pending(id);
         let _ = self.state.app.emit("notification://close", id);
     }
 }
@@ -301,6 +348,7 @@ pub async fn start_server(db: Arc<Db>, app: AppHandle) -> Result<(), Box<dyn std
         db,
         app,
         next_id: AtomicU32::new(1),
+        revisiones: Mutex::new(HashMap::new()),
     });
 
     let connection = Connection::session().await?;
