@@ -5,6 +5,16 @@ import { createApp } from 'vue';
 import App from '@/App.vue';
 import '@/assets/main.css';
 
+// Una violación de CSP no se ve: el recurso simplemente no carga y la interfaz
+// queda a medias sin decir nada. Esto la manda a la consola, que es donde se
+// puede encontrar al ajustar la política.
+document.addEventListener('securitypolicyviolation', (evento) => {
+	console.error(
+		`[CSP] bloqueado ${evento.blockedURI || '(en línea)'} por la directiva ` +
+			`«${evento.violatedDirective}» en ${evento.sourceFile ?? 'documento'}:${evento.lineNumber}`
+	);
+});
+
 /// Un fallo de JavaScript acá deja la aplicación sin montar y el cartel sin
 /// aparecer, y la consola del webview no va a ningún archivo. Se reenvía al
 /// registro del demonio para que el silencio no sea la única señal.
