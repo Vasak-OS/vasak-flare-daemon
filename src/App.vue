@@ -201,9 +201,12 @@ async function dismiss(banner: Banner) {
  * alguien lo tocó es peor que perder la acción.
  */
 async function activate(banner: Banner, actionKey: string) {
-	const { id, notif_id: notifId } = banner.notification;
+	const { id, notif_id: notifId, app_name: appName } = banner.notification;
 	await drop(notifId);
-	await invoke('activate_notification', { notifId, actionKey, id }).catch((error) => {
+	// El nombre viaja con la acción para que el escritorio pueda traer al frente
+	// la aplicación que avisó: hacer clic en una notificación tiene que mostrar
+	// la conversación, no sólo avisarle al programa que la tocaron.
+	await invoke('activate_notification', { notifId, actionKey, id, appName }).catch((error) => {
 		console.error('No se pudo ejecutar la acción de la notificación', error);
 	});
 }

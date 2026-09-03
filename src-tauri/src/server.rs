@@ -85,6 +85,14 @@ async fn emit_closed(id: u32, reason: u32) {
 /// This is the whole point of a notification that says "Reply" or opens a page:
 /// without this signal the click does nothing at all, which is exactly what was
 /// happening — the banner only knew how to hide itself.
+/// La conexión al bus de sesión, para quien necesite hablarle a otro servicio.
+///
+/// Es la misma que ya sostiene el servidor de notificaciones: abrir una segunda
+/// por cada mensaje suelto sería una conexión nueva al bus por cada clic.
+pub fn conexion() -> Option<&'static Connection> {
+    CONN.get()
+}
+
 pub async fn emit_action(notif_id: u32, action_key: &str) {
     if let Some(conn) = CONN.get() {
         if let Ok(iface) = conn
