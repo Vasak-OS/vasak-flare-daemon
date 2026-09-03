@@ -81,10 +81,15 @@ thread_local! {
 /// Va **sin esperar respuesta**. Ese servicio no contesta ninguno de sus
 /// métodos, así que una llamada normal se quedaría colgada hasta que venciera
 /// el plazo de D-Bus —veinticinco segundos— por cada clic.
-async fn traer_al_frente(app_name: &str) {
+///
+/// Y se lanza en una tarea aparte, no encadenada al cierre del cartel: aunque
+/// no espere respuesta, el envío puede demorarse si el transporte está tapado,
+/// y de eso no puede depender que la notificación se marque leída y se cierre.
+async fn traer_al_frente(app_name: String) {
     if app_name.is_empty() {
         return;
     }
+    let app_name = app_name.as_str();
     let Some(conexion) = server::conexion() else {
         return;
     };
@@ -93,6 +98,11 @@ async fn traer_al_frente(app_name: &str) {
         .and_then(|b| b.destination("org.vasak.os.Desktop"))
         .and_then(|b| b.interface("org.vasak.os.Desktop"))
         .and_then(|b| b.with_flags(zbus::message::Flags::NoReplyExpected))
+        // Y sin arrancarlo si no está: hacer clic en una notificación no tiene
+        // por qué levantar el escritorio. Hoy ese nombre no es activable —no
+        // hay ningún `.service` que lo declare—, pero el día que lo sea, esta
+        // llamada no debería ser la que lo encienda.
+        .and_then(|b| b.with_flags(zbus::message::Flags::NoAutoStart))
         .and_then(|b| b.build(&(app_name,)));
 
     match mensaje {
@@ -122,8 +132,8 @@ async fn activate_notification(
     server::emit_action(notif_id, &action_key).await;
     // Después de emitir la acción y no antes: si traer la ventana fallara, la
     // aplicación tiene que haberse enterado igual de que le tocaron el aviso.
-    if let Some(nombre) = app_name.as_deref() {
-        traer_al_frente(nombre).await;
+    if let Some(nombre) = app_name {
+        tauri::async_runtime::spawn(traer_al_frente(nombre));
     }
     // Quien actúa sobre una notificación ya la vio: no tiene sentido que siga
     // contando como pendiente en el historial del escritorio.
