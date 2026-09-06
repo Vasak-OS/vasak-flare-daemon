@@ -4,7 +4,6 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useConfigStore } from '@vasakgroup/plugin-config-manager';
 import { getIconSource } from '@vasakgroup/plugin-vicons';
 import { useI18n } from '@vasakgroup/tauri-plugin-i18n';
-import type { Store } from 'pinia';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 
 const { t } = useI18n();
@@ -247,10 +246,7 @@ async function push(notification: FlareNotification) {
 onMounted(async () => {
 	// Load the theme (dark/light + scheme) like the rest of VasakOS.
 	try {
-		const configStore = useConfigStore() as Store<
-			'config',
-			{ config: any; loadConfig: () => Promise<void> }
-		>;
+		const configStore = useConfigStore();
 		await configStore.loadConfig();
 		unlisteners.push(await listen('config-changed', () => void configStore.loadConfig()));
 	} catch (error) {
@@ -343,7 +339,7 @@ onUnmounted(() => {
             </svg>
           </button>
         </div>
-        <p class="truncate font-semibold text-tx-main">{{ banner.notification.summary }}</p>
+        <p class="truncate font-title font-semibold text-tx-main">{{ banner.notification.summary }}</p>
         <p v-if="banner.notification.body" class="mt-0.5 line-clamp-3 text-sm text-tx-muted">
           {{ banner.notification.body }}
         </p>
