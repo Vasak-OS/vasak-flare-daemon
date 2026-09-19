@@ -48,7 +48,13 @@ describe('los carteles', () => {
 		// Lo que se borró. Sin esta comprobación vuelve en la próxima copia de
 		// plantilla y nadie lo nota, porque no se usa: se queda ahí ocupando
 		// lugar y pidiendo que alguien lo «arregle».
-		const molde = [...new Glob('{layouts,components/topbar}/**/*.vue').scanSync(raiz)];
+		// Filtrando la lista y no con un glob de `**/`: en Bun ese comodín pide
+		// al menos un directorio, así que `layouts/**/*.vue` no encuentra
+		// `layouts/WindowAppLayout.vue` y la guardia pasaba con el molde
+		// puesto. Se vio devolviendo los archivos a su sitio.
+		const molde = componentes.filter(
+			(ruta) => ruta.startsWith('layouts/') || ruta.startsWith('components/topbar/')
+		);
 
 		expect(molde).toEqual([]);
 	});
