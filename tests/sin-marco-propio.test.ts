@@ -15,14 +15,34 @@
 
 import { describe, expect, test } from 'bun:test';
 import { Glob } from 'bun';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const raiz = new URL('../src/', import.meta.url).pathname;
-const componentes = [...new Glob('**/*.vue').scanSync(raiz)];
+// `fileURLToPath` y no `.pathname`: éste deja los caracteres codificados tal
+// como están, así que una ruta con un espacio llega como `%20` y `scanSync` no
+// encuentra nada. Y una guardia que no encuentra archivos pasa: las tres
+// comprobaciones se cumplen sobre una lista vacía. De ahí también la cuarta.
+const raiz = fileURLToPath(new URL('../src/', import.meta.url));
+
+// `.ts` además de `.vue`: `getCurrentWindow().close()` se escribe igual de bien
+// en un servicio, y `layouts/` podría volver con un archivo que no sea un
+// componente.
 const fuentes = await Promise.all(
-	componentes.map(async (ruta) => [ruta, await Bun.file(raiz + ruta).text()] as const)
+	[...new Glob('**/*.{vue,ts}').scanSync(raiz)].map(
+		async (ruta) => [ruta, await Bun.file(join(raiz, ruta)).text()] as const
+	)
 );
+const rutas = fuentes.map(([ruta]) => ruta);
 
 describe('los carteles', () => {
+	test('hay algo que mirar', () => {
+		// Sin esto las tres de abajo pasan con la lista vacía, que es en lo que
+		// quedan si el patrón deja de encontrar archivos. Una guardia que se
+		// apaga sola es peor que no tenerla: dice que sí.
+		expect(rutas).toContain('App.vue');
+		expect(rutas.length).toBeGreaterThan(3);
+	});
+
 	test('no dibujan marco de ventana', () => {
 		// `rounded-corner-window` es la esquina de **la ventana**, y sale del
 		// marco compartido. Un cartel lleva `rounded-corner` a secas.
@@ -52,7 +72,7 @@ describe('los carteles', () => {
 		// al menos un directorio, así que `layouts/**/*.vue` no encuentra
 		// `layouts/WindowAppLayout.vue` y la guardia pasaba con el molde
 		// puesto. Se vio devolviendo los archivos a su sitio.
-		const molde = componentes.filter(
+		const molde = rutas.filter(
 			(ruta) => ruta.startsWith('layouts/') || ruta.startsWith('components/topbar/')
 		);
 
