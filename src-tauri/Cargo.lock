@@ -4638,10 +4638,11 @@ dependencies = [
 
 [[package]]
 name = "vasak-flare-daemon"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "dirs",
  "gtk",
  "gtk-layer-shell",
  "rusqlite",
