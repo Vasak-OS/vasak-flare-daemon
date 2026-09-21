@@ -24,14 +24,25 @@ pub struct Db {
     conn: Mutex<Connection>,
 }
 
-fn data_dir() -> PathBuf {
-    let base = std::env::var("XDG_DATA_HOME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("vasak-flare-daemon")
+fn data_dir() -> Option<PathBuf> {
+    data_dir_bajo(dirs::data_dir())
+}
+
+/// La misma decisión sin leer el entorno.
+///
+/// Aparte para poder probarla: el entorno es global al proceso y las pruebas
+/// corren en paralelo, así que una que escriba una variable decide al azar el
+/// resultado de otra.
+///
+/// Antes esto trataba la variable **vacía** y no la **relativa**, que tiene la
+/// misma consecuencia, y sobre todo **caía a `"."`** cuando no había ninguna
+/// base: la base de datos del daemon terminaba en el directorio desde el que se
+/// lo lanzó, distinto en cada arranque y en ninguno el que corresponde.
+/// Devolver `None` y que quien llama decida es mejor que escribir en un lugar
+/// que nadie eligió.
+fn data_dir_bajo(base: Option<PathBuf>) -> Option<PathBuf> {
+    let base = base.filter(|base| base.is_absolute())?;
+    Some(base.join("vasak-flare-daemon"))
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS notifications (
@@ -51,7 +62,16 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS notifications (
 
 impl Db {
     pub fn new() -> rusqlite::Result<Self> {
-        let dir = data_dir();
+        // Sin una base válida se falla en vez de escribir en cualquier lado.
+        // Antes se caía a `"."` y la base de datos terminaba en el directorio
+        // desde el que se lanzó el daemon: distinto en cada arranque, y las
+        // notificaciones guardadas parecían no haber existido nunca. Fallar acá
+        // lo dice; escribir en `"."` lo esconde.
+        let dir = data_dir().ok_or_else(|| {
+            rusqlite::Error::InvalidPath(PathBuf::from(
+                "no hay un directorio de datos absoluto donde guardar las notificaciones",
+            ))
+        })?;
         let _ = std::fs::create_dir_all(&dir);
         let conn = Connection::open(dir.join("notifications.db"))?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
@@ -66,7 +86,9 @@ impl Db {
 
     fn with_connection(conn: Connection) -> rusqlite::Result<Self> {
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     fn row(row: &rusqlite::Row) -> rusqlite::Result<StoredNotification> {
@@ -93,8 +115,15 @@ impl Db {
              (notif_id, app_name, app_icon, summary, body, urgency, actions, created_at, read)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
-                n.notif_id as i64, n.app_name, n.app_icon, n.summary, n.body,
-                n.urgency as i64, actions, n.created_at, n.read as i64,
+                n.notif_id as i64,
+                n.app_name,
+                n.app_icon,
+                n.summary,
+                n.body,
+                n.urgency as i64,
+                actions,
+                n.created_at,
+                n.read as i64,
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -147,23 +176,28 @@ impl Db {
     pub fn notif_id_for_history(&self, id: i64) -> rusqlite::Result<Option<u32>> {
         let conn = self.conn.lock().unwrap();
         let v: Option<i64> = conn
-            .query_row("SELECT notif_id FROM notifications WHERE id = ?1", params![id], |r| r.get(0))
+            .query_row(
+                "SELECT notif_id FROM notifications WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
             .optional()?;
         Ok(v.map(|x| x as u32))
     }
 
     pub fn unread_count(&self) -> rusqlite::Result<i64> {
-        self.conn
-            .lock()
-            .unwrap()
-            .query_row("SELECT COUNT(*) FROM notifications WHERE read = 0", [], |r| r.get(0))
+        self.conn.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM notifications WHERE read = 0",
+            [],
+            |r| r.get(0),
+        )
     }
 
     pub fn mark_read(&self, id: i64) -> rusqlite::Result<()> {
-        self.conn
-            .lock()
-            .unwrap()
-            .execute("UPDATE notifications SET read = 1 WHERE id = ?1", params![id])?;
+        self.conn.lock().unwrap().execute(
+            "UPDATE notifications SET read = 1 WHERE id = ?1",
+            params![id],
+        )?;
         Ok(())
     }
 
@@ -184,7 +218,10 @@ impl Db {
     }
 
     pub fn clear_all(&self) -> rusqlite::Result<()> {
-        self.conn.lock().unwrap().execute("DELETE FROM notifications", [])?;
+        self.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM notifications", [])?;
         Ok(())
     }
 }
@@ -270,6 +307,36 @@ mod tests {
         db.insert(&sample(1, "una")).unwrap();
 
         let guardada = &db.list(false, 10).unwrap()[0];
-        assert_eq!(guardada.actions, vec!["default".to_string(), "Abrir".to_string()]);
+        assert_eq!(
+            guardada.actions,
+            vec!["default".to_string(), "Abrir".to_string()]
+        );
+    }
+
+    #[test]
+    fn la_base_cuelga_del_directorio_de_datos() {
+        assert_eq!(
+            data_dir_bajo(Some(PathBuf::from("/home/pato/.local/share"))),
+            Some(PathBuf::from("/home/pato/.local/share/vasak-flare-daemon"))
+        );
+    }
+
+    #[test]
+    fn una_base_relativa_no_da_directorio() {
+        // Antes esto no sólo aceptaba una base relativa: cuando no había
+        // ninguna caía a `"."`, o sea al directorio desde el que se lanzó el
+        // daemon. La base de datos de notificaciones terminaba ahí, distinta en
+        // cada arranque, sin que nada fallara.
+        //
+        // Las cuatro formas de no ser absoluta: la del nombre suelto es la que
+        // se escapa cuando uno se acuerda sólo de la vacía.
+        for relativa in ["", "datos", "./datos", "../datos"] {
+            assert_eq!(
+                data_dir_bajo(Some(PathBuf::from(relativa))),
+                None,
+                "una base de {relativa:?} no tiene que dar directorio"
+            );
+        }
+        assert_eq!(data_dir_bajo(None), None);
     }
 }
