@@ -19,3 +19,9 @@ jobs:
     permissions:
       contents: read
     uses: Vasak-OS/.github/.github/workflows/app.yml@main
+    # El guardia de bibliotecas propias atrasadas corta en vez de avisar. Este
+    # repositorio ya está al día, así que encenderlo no bloquea nada hoy y evita
+    # volver a quedarse atrás sin que nada falle, que es lo que hace `^0.x` y
+    # también un `^2.5.0` que ya se cumple con la 2.5.
+    with:
+      bibliotecas_cortan: true
