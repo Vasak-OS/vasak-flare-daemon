@@ -13,7 +13,8 @@
  * termina dibujando una barra de título arriba de un cartel.
  *
  * Con el mismo molde vino `useReactiveIcon()`, y con el mismo final: noventa y
- * una líneas que **nadie llamaba nunca**. Lo mismo pero peor, porque un
+ * una líneas que **nadie llamaba nunca**. Y `assets/vue.svg`, el logo que trae
+ * `create-vue`, que tampoco nombraba nadie. Lo mismo pero peor, porque un
  * composable muerto no se ve raro: se lee como una pieza de la casa, y el
  * primero que necesite un icono lo va a usar en vez de `ThemeIcon`, que es lo
  * que hizo que hubiera una copia distinta en cada repositorio.
@@ -32,9 +33,9 @@ const raiz = fileURLToPath(new URL('../src/', import.meta.url));
 
 // `.ts` además de `.vue`: `getCurrentWindow().close()` se escribe igual de bien
 // en un servicio, y `layouts/` podría volver con un archivo que no sea un
-// componente.
+// componente. `.svg` porque lo que trajo el molde no era sólo código.
 const fuentes = await Promise.all(
-	[...new Glob('**/*.{vue,ts}').scanSync(raiz)].map(
+	[...new Glob('**/*.{vue,ts,svg}').scanSync(raiz)].map(
 		async (ruta) => [ruta, await Bun.file(join(raiz, ruta)).text()] as const
 	)
 );
@@ -78,6 +79,13 @@ describe('los carteles', () => {
 		const copia = rutas.filter((ruta) => ruta.includes('useReactiveIcon'));
 
 		expect(copia).toEqual([]);
+	});
+
+	test('ni el logo de Vue', () => {
+		// `src/assets/vue.svg`, el que trae `create-vue`. Buscado en todo el
+		// repositorio y no lo nombraba nadie: ni un import, ni el `index.html`,
+		// ni la configuración de Vite.
+		expect(rutas.filter((ruta) => ruta.endsWith('vue.svg'))).toEqual([]);
 	});
 
 	test('y nadie resuelve iconos del tema por su cuenta en un componente', () => {
