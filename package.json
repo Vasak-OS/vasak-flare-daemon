@@ -1,7 +1,7 @@
 {
   "name": "vasak-flare-daemon",
   "private": true,
-  "version": "0.4.7",
+  "version": "0.4.8",
   "type": "module",
   "scripts": {
     "dev": "bunx --bun vite",
@@ -17,7 +17,7 @@
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-shell": "^2.3.6",
-    "@vasakgroup/plugin-config-manager": "^2.6.0",
+    "@vasakgroup/plugin-config-manager": "~2.6.1",
     "@vasakgroup/plugin-vicons": "^2.2.0",
     "@vasakgroup/tauri-plugin-i18n": "^2.3.0",
     "path": "^0.12.7",
@@ -36,5 +36,10 @@
     "typescript": "^5.9.3",
     "vite": "^7.3.6",
     "vue-tsc": "^3.3.11"
+  },
+  "vasak": {
+    "bibliotecasAtrasadas": {
+      "@vasakgroup/plugin-config-manager": "La 2.7.0 declara pinia ^4 y esta aplicación está en pinia 3: subir el rango arrastra un salto mayor ajeno. Instalar no falla —bun avisa «incorrect peer dependency» y sigue—, pero el manifiesto pasa a declarar un complemento que dice necesitar una mayor que acá no está. Por eso el rango es ~2.6.1 y no ^2.6.1, que volvería a alcanzar la 2.7.0 en el próximo `bun update`. Se saca al subir a pinia 4."
+    }
   }
 }
