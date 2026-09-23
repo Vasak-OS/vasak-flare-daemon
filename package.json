@@ -39,7 +39,7 @@
   },
   "vasak": {
     "bibliotecasAtrasadas": {
-      "@vasakgroup/plugin-config-manager": "La 2.7.0 declara pinia ^4 y esta aplicación está en pinia 3: subir el rango arrastra un salto mayor ajeno. Por eso el rango es ~2.6.1 y no ^2.6.1, que alcanzaría una versión que no se puede instalar. Se saca al subir a pinia 4."
+      "@vasakgroup/plugin-config-manager": "La 2.7.0 declara pinia ^4 y esta aplicación está en pinia 3: subir el rango arrastra un salto mayor ajeno. Instalar no falla —bun avisa «incorrect peer dependency» y sigue—, pero el manifiesto pasa a declarar un complemento que dice necesitar una mayor que acá no está. Por eso el rango es ~2.6.1 y no ^2.6.1, que volvería a alcanzar la 2.7.0 en el próximo `bun update`. Se saca al subir a pinia 4."
     }
   }
 }
