@@ -1,45 +1,45 @@
 {
-  "name": "vasak-flare-daemon",
-  "private": true,
-  "version": "0.4.8",
-  "type": "module",
-  "scripts": {
-    "dev": "bunx --bun vite",
-    "build": "bunx vue-tsc --noEmit && bunx --bun vite build",
-    "preview": "bunx --bun vite preview",
-    "test": "bun test",
-    "tauri": "tauri",
-    "lint": "bunx --bun biome check .",
-    "lint:fix": "bunx --bun biome check --write . && bunx --bun biome format --write .",
-    "format": "bunx --bun biome format --write ."
-  },
-  "dependencies": {
-    "@tailwindcss/vite": "^4.3.3",
-    "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-shell": "^2.3.6",
-    "@vasakgroup/plugin-config-manager": "~2.6.1",
-    "@vasakgroup/plugin-vicons": "^2.2.0",
-    "@vasakgroup/tauri-plugin-i18n": "^2.3.0",
-    "path": "^0.12.7",
-    "pinia": "^3.0.4",
-    "url": "^0.11.4",
-    "vue": "^3.5.43"
-  },
-  "devDependencies": {
-    "@biomejs/biome": "^2.5.14",
-    "@tailwindcss/postcss": "^4.3.3",
-    "@tauri-apps/cli": "^2.11.5",
-    "@types/node": "^25.9.5",
-    "@vitejs/plugin-vue": "^6.0.9",
-    "postcss": "^8.5.28",
-    "tailwindcss": "^4.3.3",
-    "typescript": "^5.9.3",
-    "vite": "^7.3.6",
-    "vue-tsc": "^3.3.11"
-  },
-  "vasak": {
-    "bibliotecasAtrasadas": {
-      "@vasakgroup/plugin-config-manager": "La 2.7.0 declara pinia ^4 y esta aplicación está en pinia 3: subir el rango arrastra un salto mayor ajeno. Instalar no falla —bun avisa «incorrect peer dependency» y sigue—, pero el manifiesto pasa a declarar un complemento que dice necesitar una mayor que acá no está. Por eso el rango es ~2.6.1 y no ^2.6.1, que volvería a alcanzar la 2.7.0 en el próximo `bun update`. Se saca al subir a pinia 4."
-    }
-  }
+	"name": "vasak-flare-daemon",
+	"private": true,
+	"version": "0.4.9",
+	"type": "module",
+	"scripts": {
+		"dev": "bunx --bun vite",
+		"build": "bunx vue-tsc --noEmit && bunx --bun vite build",
+		"preview": "bunx --bun vite preview",
+		"test": "bun test",
+		"tauri": "tauri",
+		"lint": "bunx --bun biome check .",
+		"lint:fix": "bunx --bun biome check --write . && bunx --bun biome format --write .",
+		"format": "bunx --bun biome format --write ."
+	},
+	"dependencies": {
+		"@tailwindcss/vite": "^4.3.3",
+		"@tauri-apps/api": "^2.11.1",
+		"@tauri-apps/plugin-shell": "^2.3.6",
+		"@vasakgroup/plugin-config-manager": "~2.6.1",
+		"@vasakgroup/plugin-vicons": "^2.2.1",
+		"@vasakgroup/tauri-plugin-i18n": "^2.3.0",
+		"path": "^0.12.7",
+		"pinia": "^3.0.4",
+		"url": "^0.11.4",
+		"vue": "^3.5.43"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.14",
+		"@tailwindcss/postcss": "^4.3.3",
+		"@tauri-apps/cli": "^2.11.5",
+		"@types/node": "^25.9.8",
+		"@vitejs/plugin-vue": "^6.0.9",
+		"postcss": "^8.5.28",
+		"tailwindcss": "^4.3.3",
+		"typescript": "^5.9.3",
+		"vite": "^7.3.6",
+		"vue-tsc": "^3.3.11"
+	},
+	"vasak": {
+		"bibliotecasAtrasadas": {
+			"@vasakgroup/plugin-config-manager": "La 2.7.0 declara pinia ^4 y esta aplicación está en pinia 3: subir el rango arrastra un salto mayor ajeno. Instalar no falla —bun avisa «incorrect peer dependency» y sigue—, pero el manifiesto pasa a declarar un complemento que dice necesitar una mayor que acá no está. Por eso el rango es ~2.6.1 y no ^2.6.1, que volvería a alcanzar la 2.7.0 en el próximo `bun update`. Se saca al subir a pinia 4. **El paquete de Rust sí está en la 2.7.0**: es otro manifiesto, no pasa por pinia, y antes de la 2.6.0 borraba de `vasak.conf` las claves que su modelo no conoce."
+		}
+	}
 }
