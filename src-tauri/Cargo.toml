@@ -1,6 +1,6 @@
 [package]
 name = "vasak-flare-daemon"
-version = "0.4.9"
+version = "0.5.0"
 description = "Persistent freedesktop notification daemon for VasakOS"
 authors = ["Vasak Group", "Joaquin (Pato) Decima"]
 edition = "2021"
@@ -20,7 +20,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # Los directorios base del estándar: la regla de que una variable relativa o
 # vacía se ignora vive ahí y no en una copia acá.
-dirs = "6"
+dirs = "7"
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
@@ -32,7 +32,7 @@ gtk-layer-shell = { version = "0.8", features = ["v0_5", "v0_6"] }
 base64 = "0.22"
 zbus = { version = "4", features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-rusqlite = { version = "0.31" }
+rusqlite = { version = "0.40" }
 chrono = { version = "0.4", features = ["serde"] }
 tauri-plugin-i18n-vsk = "2.1.1"
 
