@@ -117,14 +117,17 @@ const clickable = computed(() => hasDefaultAction(props.notification));
           {{ notification.body }}
         </p>
         <!-- Las demás acciones, como botones. Antes no había forma de llegar a
-             ellas: el cartel desaparecía a los cinco segundos. -->
-        <div v-if="actions.length" class="mt-2 flex flex-wrap gap-2" @click.stop>
+             ellas: el cartel desaparecía a los cinco segundos. Cada botón corta
+             su propio clic (`stop-propagation`) para no disparar además el de
+             la tarjeta; la fila no escucha nada. -->
+        <div v-if="actions.length" class="mt-2 flex flex-wrap gap-2">
           <ActionButton
             v-for="action in actions"
             :key="action.key"
             :label="action.label"
             variant="secondary"
             size="sm"
+            stop-propagation
             @click="emit('action', action.key)" />
         </div>
       </div>

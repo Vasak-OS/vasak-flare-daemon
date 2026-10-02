@@ -80,9 +80,32 @@ export function hasDefaultAction(notification: FlareNotification): boolean {
  */
 export function iconFor(appIcon: string, toAssetUrl: (path: string) => string): BannerIcon | null {
 	if (!appIcon) return null;
-	if (appIcon.startsWith('/') || appIcon.startsWith('file://')) {
-		const path = appIcon.startsWith('file://') ? appIcon.slice('file://'.length) : appIcon;
-		return { name: '', fallbacks: [], src: toAssetUrl(path) };
+	if (appIcon.startsWith('/')) {
+		return { name: '', fallbacks: [], src: toAssetUrl(appIcon) };
+	}
+	if (appIcon.startsWith('file://')) {
+		const path = filePath(appIcon);
+		return path ? { name: '', fallbacks: [], src: toAssetUrl(path) } : null;
 	}
 	return { name: appIcon, fallbacks: [GENERIC_APP_ICON], src: '' };
+}
+
+/**
+ * La ruta local de una URI `file://`, o `null` si no es de esta máquina o está
+ * mal formada.
+ *
+ * Una URI va codificada: `file:///home/ana/mi%20icono.png` nombra
+ * `mi icono.png`. Cortar el esquema a mano dejaba el `%20`, y `convertFileSrc`
+ * lo volvía a codificar, así que el protocolo de assets buscaba un archivo con
+ * `%20` en el nombre y el cartel salía sin icono. `file://localhost/…` es la
+ * misma máquina; con otro host no hay archivo local que mostrar.
+ */
+function filePath(uri: string): string | null {
+	try {
+		const url = new URL(uri);
+		if (url.hostname && url.hostname !== 'localhost') return null;
+		return decodeURIComponent(url.pathname) || null;
+	} catch {
+		return null;
+	}
 }

@@ -73,6 +73,22 @@ describe('el icono', () => {
 		expect(iconFor('file:///home/ana/icono.png', asset)?.src).toBe('asset://localhost/home/ana/icono.png');
 	});
 
+	test('una URI file:// se decodifica antes de pasar por el protocolo de assets', () => {
+		// Sin decodificar, `convertFileSrc` codificaba el `%20` otra vez y el
+		// archivo no se encontraba.
+		expect(iconFor('file:///home/ana/mi%20icono.png', asset)?.src).toBe(
+			'asset://localhost/home/ana/mi icono.png'
+		);
+		expect(iconFor('file://localhost/usr/share/icono.png', asset)?.src).toBe(
+			'asset://localhost/usr/share/icono.png'
+		);
+	});
+
+	test('una URI de otra máquina o mal formada no da icono', () => {
+		expect(iconFor('file://otra-maquina/home/ana/icono.png', asset)).toBeNull();
+		expect(iconFor('file:///home/ana/%E0%A4%A.png', asset)).toBeNull();
+	});
+
 	test('sin icono no se reserva el lugar', () => {
 		// Como antes: un cartel sin icono arranca el texto contra el borde.
 		expect(iconFor('', asset)).toBeNull();
