@@ -12,8 +12,27 @@ import { join } from 'node:path';
  * `<div>`, que es un elemento que escucha el mouse y no el teclado (lo marcó
  * SonarCloud: `Web:MouseEventWithoutKeyboardEquivalentCheck`).
  */
+/**
+ * Saca los comentarios HTML cortando por sus delimitadores, no con un
+ * reemplazo de expresiones regulares: sacar uno puede juntar los pedazos de
+ * otro (CodeQL, `js/incomplete-multi-character-sanitization`).
+ */
+function stripHtmlComments(text: string): string {
+	let out = '';
+	let index = 0;
+	while (index < text.length) {
+		const start = text.indexOf('<!--', index);
+		if (start === -1) return out + text.slice(index);
+		out += text.slice(index, start);
+		const end = text.indexOf('-->', start + 4);
+		if (end === -1) return out;
+		index = end + 3;
+	}
+	return out;
+}
+
 const source = readFileSync(join(import.meta.dir, '..', 'src/components/NotificationBanner.vue'), 'utf8');
-const template = source.slice(source.indexOf('<template>')).replace(/<!--[\s\S]*?-->/g, '');
+const template = stripHtmlComments(source.slice(source.indexOf('<template>')));
 
 describe('los botones del cartel', () => {
 	const buttons = [...template.matchAll(/<ActionButton\b[\s\S]*?\/>/g)].map((m) => m[0]);
