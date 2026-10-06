@@ -23,7 +23,7 @@
 //! juego prende y apaga cada vez que se abre un juego, eso es demasiado.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use zbus::interface;
 use zbus::object_server::SignalContext;
@@ -37,12 +37,21 @@ pub const URGENCY_CRITICAL: u8 = 2;
 #[derive(Debug, Default)]
 pub struct DoNotDisturb {
     enabled: AtomicBool,
+    /// Ordena los cambios entre sí, no las lecturas.
+    ///
+    /// Sin esto, dos `set` a la vez podían intercambiar el valor en un orden
+    /// y escribirlo en el disco en el otro: la memoria decía «puesto» y la
+    /// base «quitado», y la sesión siguiente arrancaba distinta. Las lecturas
+    /// del camino de cada notificación no lo toman: siguen siendo una carga
+    /// atómica.
+    writes: Mutex<()>,
 }
 
 impl DoNotDisturb {
     pub fn new(enabled: bool) -> Self {
         Self {
             enabled: AtomicBool::new(enabled),
+            writes: Mutex::new(()),
         }
     }
 
@@ -65,6 +74,7 @@ impl DoNotDisturb {
     /// no escribe nada. El intercambio es atómico, así que dos pedidos a la vez
     /// no pueden devolver los dos el mismo «anterior».
     pub fn set(&self, enabled: bool, persist: impl FnOnce(bool)) -> bool {
+        let _write = self.writes.lock().unwrap_or_else(PoisonError::into_inner);
         let previous = self.enabled.swap(enabled, Ordering::AcqRel);
         if previous != enabled {
             persist(enabled);
@@ -153,6 +163,46 @@ mod tests {
         assert!(dnd.set(true, |_| {}));
         assert!(dnd.set(false, |_| {}));
         assert!(!dnd.is_enabled());
+    }
+
+    /// Dos cambios a la vez: lo que queda en el disco es lo que quedó en
+    /// memoria. A queda escribiendo despacio mientras B entra; sin el candado,
+    /// B intercambia y escribe en el medio y A pisa el disco con un valor que
+    /// la memoria ya no tiene.
+    #[test]
+    fn el_disco_y_la_memoria_no_se_separan() {
+        let dnd = Arc::new(DoNotDisturb::default());
+        let disk = Arc::new(Mutex::new(false));
+        let (b_starting, wait_for_b) = std::sync::mpsc::channel::<()>();
+
+        let a = {
+            let dnd = dnd.clone();
+            let disk = disk.clone();
+            std::thread::spawn(move || {
+                dnd.set(true, |value| {
+                    wait_for_b.recv().unwrap();
+                    // Tiempo de sobra para que B termine, si nada lo frena.
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    *disk.lock().unwrap() = value;
+                });
+            })
+        };
+        // Que A ya esté adentro de `set` antes de que B arranque.
+        while !dnd.is_enabled() {
+            std::thread::yield_now();
+        }
+        let b = {
+            let dnd = dnd.clone();
+            let disk = disk.clone();
+            std::thread::spawn(move || {
+                b_starting.send(()).unwrap();
+                dnd.set(false, |value| *disk.lock().unwrap() = value);
+            })
+        };
+        a.join().unwrap();
+        b.join().unwrap();
+
+        assert_eq!(*disk.lock().unwrap(), dnd.is_enabled());
     }
 
     /// El disco se toca sólo cuando el modo cambia de verdad.

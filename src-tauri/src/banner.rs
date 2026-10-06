@@ -92,7 +92,9 @@ pub fn deliver(app: &AppHandle, stored: &StoredNotification) {
     // notificación podría caer entre el `READY = true` y el drenado, y no
     // estar ni en la cola ni en la pantalla.
     {
-        let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = PENDING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if READY.load(Ordering::SeqCst) {
             let _ = app.emit("notification://new", stored);
             return;
@@ -106,13 +108,17 @@ pub fn deliver(app: &AppHandle, stored: &StoredNotification) {
 
 /// Una notificación cerrada antes de mostrarse no tiene que mostrarse.
 pub fn drop_pending(notif_id: u32) {
-    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pending = PENDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     pending.retain(|stored| stored.notif_id != notif_id);
 }
 
 /// El frontend terminó de montar: se lleva lo que se acumuló.
 pub fn take_pending() -> Vec<StoredNotification> {
-    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pending = PENDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     READY.store(true, Ordering::SeqCst);
     traza(&format!("el cartel reclamó {} pendientes", pending.len()));
     std::mem::take(&mut *pending)

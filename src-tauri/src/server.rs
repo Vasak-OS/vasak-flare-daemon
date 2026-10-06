@@ -272,7 +272,7 @@ impl NotificationServer {
                 .state
                 .revisiones
                 .lock()
-                .unwrap_or_else(|envenenado| envenenado.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let actual = revisiones.entry(id).or_insert(0);
             *actual += 1;
             *actual
@@ -294,7 +294,7 @@ impl NotificationServer {
                 let vigente = estado
                     .revisiones
                     .lock()
-                    .unwrap_or_else(|envenenado| envenenado.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .get(&id)
                     .copied()
                     .unwrap_or(0);
