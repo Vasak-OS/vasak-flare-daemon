@@ -196,9 +196,7 @@ fn ensure_created(app: &AppHandle) {
             let creacion = CREATION.fetch_add(1, Ordering::SeqCst) + 1;
             std::thread::spawn(move || {
                 std::thread::sleep(WARMUP_LIMIT);
-                if !READY.load(Ordering::SeqCst)
-                    && CREATION.load(Ordering::SeqCst) == creacion
-                {
+                if !READY.load(Ordering::SeqCst) && CREATION.load(Ordering::SeqCst) == creacion {
                     traza("el cartel nunca avisó que cargó; se desarma");
                     teardown(&watchdog, None);
                 }

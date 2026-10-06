@@ -58,7 +58,14 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS notifications (
         read INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_notif_id ON notifications(notif_id);
-    CREATE INDEX IF NOT EXISTS idx_read ON notifications(read);";
+    CREATE INDEX IF NOT EXISTS idx_read ON notifications(read);
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );";
+
+/// La clave de «No molestar» en la tabla de ajustes.
+const DO_NOT_DISTURB_KEY: &str = "do_not_disturb";
 
 impl Db {
     pub fn new() -> rusqlite::Result<Self> {
@@ -224,6 +231,32 @@ impl Db {
             .execute("DELETE FROM notifications", [])?;
         Ok(())
     }
+
+    /// Si «No molestar» quedó puesto en la sesión anterior. Sin fila, apagado.
+    ///
+    /// Se lee una vez, al arrancar; después manda el valor en memoria.
+    pub fn do_not_disturb(&self) -> rusqlite::Result<bool> {
+        let value: Option<String> = self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![DO_NOT_DISTURB_KEY],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(value.as_deref() == Some("1"))
+    }
+
+    pub fn set_do_not_disturb(&self, enabled: bool) -> rusqlite::Result<()> {
+        self.conn.lock().unwrap().execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![DO_NOT_DISTURB_KEY, if enabled { "1" } else { "0" }],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -311,6 +344,37 @@ mod tests {
             guardada.actions,
             vec!["default".to_string(), "Abrir".to_string()]
         );
+    }
+
+    /// «No molestar» se recuerda entre sesiones, y empieza apagado.
+    #[test]
+    fn no_molestar_se_recuerda() {
+        let db = Db::in_memory().unwrap();
+        assert!(!db.do_not_disturb().unwrap(), "sin nada guardado, apagado");
+
+        db.set_do_not_disturb(true).unwrap();
+        assert!(db.do_not_disturb().unwrap());
+        db.set_do_not_disturb(false).unwrap();
+        assert!(!db.do_not_disturb().unwrap());
+    }
+
+    /// Y sobrevive a cerrar y volver a abrir la base, que es lo que pasa entre
+    /// una sesión y la siguiente.
+    #[test]
+    fn no_molestar_sobrevive_a_reabrir_la_base() {
+        let dir = std::env::temp_dir().join(format!("flare-dnd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("notifications.db");
+        let _ = std::fs::remove_file(&path);
+
+        Db::with_connection(Connection::open(&path).unwrap())
+            .unwrap()
+            .set_do_not_disturb(true)
+            .unwrap();
+        let reopened = Db::with_connection(Connection::open(&path).unwrap()).unwrap();
+        assert!(reopened.do_not_disturb().unwrap());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

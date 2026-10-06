@@ -8,6 +8,7 @@ use zbus::zvariant::Value;
 use zbus::{interface, Connection};
 
 use crate::db::{Db, StoredNotification};
+use crate::do_not_disturb::{DoNotDisturb, DoNotDisturbInterface};
 
 const NOTIF_PATH: &str = "/org/freedesktop/Notifications";
 const VASAK_PATH: &str = "/org/vasak/Notifications";
@@ -19,6 +20,8 @@ pub struct FlareState {
     db: Arc<Db>,
     app: AppHandle,
     next_id: AtomicU32,
+    /// «No molestar»: si las notificaciones no críticas muestran cartel.
+    do_not_disturb: Arc<DoNotDisturb>,
     /// Qué entrega es la vigente para cada id de notificación.
     ///
     /// Una notificación reemplazada con `replaces_id` conserva el id, así que
@@ -75,7 +78,8 @@ async fn emit_closed(id: u32, reason: u32) {
             .interface::<_, NotificationServer>(NOTIF_PATH)
             .await
         {
-            let _ = NotificationServer::notification_closed(iface.signal_context(), id, reason).await;
+            let _ =
+                NotificationServer::notification_closed(iface.signal_context(), id, reason).await;
         }
     }
 }
@@ -142,6 +146,36 @@ async fn emit_changed() {
     }
 }
 
+/// Guarda la notificación en el historial y dice si lleva cartel.
+///
+/// Es lo que hace `Notify` antes de tocar la interfaz, aparte para poder
+/// probarlo sin ventana ni bus: la notificación **siempre** se guarda —con
+/// «No molestar» también, el centro de control la tiene que mostrar— y el
+/// cartel depende del modo y de la urgencia.
+fn accept(
+    db: &Db,
+    do_not_disturb: &DoNotDisturb,
+    stored: &mut StoredNotification,
+    replacing: bool,
+) -> bool {
+    // Update in place when replacing, so e.g. progress notifications don't
+    // spawn a new history entry each time.
+    stored.id = if replacing {
+        match db.update_by_notif_id(stored) {
+            Ok(true) => db
+                .latest_id_for_notif(stored.notif_id)
+                .ok()
+                .flatten()
+                .unwrap_or(0),
+            _ => db.insert(stored).unwrap_or(0),
+        }
+    } else {
+        db.insert(stored).unwrap_or(0)
+    };
+
+    do_not_disturb.allows_banner(stored.urgency)
+}
+
 #[interface(name = "org.freedesktop.Notifications")]
 impl NotificationServer {
     async fn get_capabilities(&self) -> Vec<String> {
@@ -163,10 +197,18 @@ impl NotificationServer {
     }
 
     #[zbus(signal)]
-    async fn action_invoked(ctxt: &SignalContext<'_>, id: u32, action_key: &str) -> zbus::Result<()>;
+    async fn action_invoked(
+        ctxt: &SignalContext<'_>,
+        id: u32,
+        action_key: &str,
+    ) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    async fn notification_closed(ctxt: &SignalContext<'_>, id: u32, reason: u32) -> zbus::Result<()>;
+    async fn notification_closed(
+        ctxt: &SignalContext<'_>,
+        id: u32,
+        reason: u32,
+    ) -> zbus::Result<()>;
 
     #[allow(clippy::too_many_arguments)]
     async fn notify(
@@ -206,22 +248,21 @@ impl NotificationServer {
             read: false,
         };
 
-        // Update in place when replacing, so e.g. progress notifications don't
-        // spawn a new history entry each time.
-        let row_id = if replaces_id != 0 {
-            match self.state.db.update_by_notif_id(&stored) {
-                Ok(true) => self.state.db.latest_id_for_notif(id).ok().flatten().unwrap_or(0),
-                _ => self.state.db.insert(&stored).unwrap_or(0),
-            }
-        } else {
-            self.state.db.insert(&stored).unwrap_or(0)
-        };
-        stored.id = row_id;
-
         // Tell the UI to show a banner, and the desktop history to refresh.
         // The banner webview may not exist yet — `deliver` creates it and
         // queues this until the frontend is listening.
-        crate::banner::deliver(&self.state.app, &stored);
+        //
+        // Con «No molestar» la notificación se guarda igual y el historial se
+        // entera, pero el cartel no sale: el corte va acá, antes de crear la
+        // ventana, para que con el modo puesto el webview ni se construya.
+        if accept(
+            &self.state.db,
+            &self.state.do_not_disturb,
+            &mut stored,
+            replaces_id != 0,
+        ) {
+            crate::banner::deliver(&self.state.app, &stored);
+        }
         emit_changed().await;
 
         // Número de esta entrega, para que su tarea de expiración no cierre una
@@ -274,11 +315,7 @@ impl NotificationServer {
         id
     }
 
-    async fn close_notification(
-        &self,
-        id: u32,
-        #[zbus(signal_context)] ctxt: SignalContext<'_>,
-    ) {
+    async fn close_notification(&self, id: u32, #[zbus(signal_context)] ctxt: SignalContext<'_>) {
         let _ = Self::notification_closed(&ctxt, id, 3).await;
         // Closed before the warming webview could show it: out of the queue.
         crate::banner::drop_pending(id);
@@ -340,8 +377,12 @@ impl VasakNotifications {
                     .interface::<_, NotificationServer>(NOTIF_PATH)
                     .await
                 {
-                    let _ =
-                        NotificationServer::action_invoked(iface.signal_context(), notif_id, &action_key).await;
+                    let _ = NotificationServer::action_invoked(
+                        iface.signal_context(),
+                        notif_id,
+                        &action_key,
+                    )
+                    .await;
                 }
             }
 
@@ -352,10 +393,17 @@ impl VasakNotifications {
 }
 
 pub async fn start_server(db: Arc<Db>, app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    // Lo que quedó de la sesión anterior. Se lee una vez; después manda la
+    // memoria.
+    let do_not_disturb = Arc::new(DoNotDisturb::new(db.do_not_disturb().unwrap_or_else(|e| {
+        eprintln!("[flare] no se pudo leer «No molestar»; arranca apagado: {e}");
+        false
+    })));
     let state = Arc::new(FlareState {
-        db,
+        db: db.clone(),
         app,
         next_id: AtomicU32::new(1),
+        do_not_disturb: do_not_disturb.clone(),
         revisiones: Mutex::new(HashMap::new()),
     });
 
@@ -371,11 +419,31 @@ pub async fn start_server(db: Arc<Db>, app: AppHandle) -> Result<(), Box<dyn std
 
     connection
         .object_server()
-        .at(NOTIF_PATH, NotificationServer { state: state.clone() })
+        .at(
+            NOTIF_PATH,
+            NotificationServer {
+                state: state.clone(),
+            },
+        )
         .await?;
     connection
         .object_server()
-        .at(VASAK_PATH, VasakNotifications { state: state.clone() })
+        .at(
+            VASAK_PATH,
+            VasakNotifications {
+                state: state.clone(),
+            },
+        )
+        .await?;
+    connection
+        .object_server()
+        .at(
+            VASAK_PATH,
+            DoNotDisturbInterface {
+                state: do_not_disturb,
+                db,
+            },
+        )
         .await?;
     let _ = connection.request_name("org.vasak.Notifications").await;
 
@@ -387,6 +455,69 @@ pub async fn start_server(db: Arc<Db>, app: AppHandle) -> Result<(), Box<dyn std
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn una(notif_id: u32, urgency: u8) -> StoredNotification {
+        StoredNotification {
+            id: 0,
+            notif_id,
+            app_name: "Telegram".into(),
+            app_icon: String::new(),
+            summary: "Hola".into(),
+            body: String::new(),
+            urgency,
+            actions: Vec::new(),
+            created_at: 1_700_000_000,
+            read: false,
+        }
+    }
+
+    /// Con «No molestar» una notificación normal se guarda y no lleva cartel.
+    #[test]
+    fn con_no_molestar_la_normal_se_guarda_sin_cartel() {
+        let db = Db::in_memory().unwrap();
+        let dnd = DoNotDisturb::new(true);
+        let mut normal = una(1, 1);
+
+        assert!(!accept(&db, &dnd, &mut normal, false), "no lleva cartel");
+        assert!(normal.id > 0, "tiene fila en el historial");
+        assert_eq!(
+            db.list(true, 10).unwrap().len(),
+            1,
+            "el centro la ve como pendiente"
+        );
+    }
+
+    /// Una crítica pasa igual, y también queda guardada.
+    #[test]
+    fn con_no_molestar_la_critica_lleva_cartel() {
+        let db = Db::in_memory().unwrap();
+        let dnd = DoNotDisturb::new(true);
+        let mut critica = una(2, 2);
+
+        assert!(accept(&db, &dnd, &mut critica, false));
+        assert_eq!(db.list(false, 10).unwrap().len(), 1);
+    }
+
+    /// Apagado el modo, los carteles vuelven, y un reemplazo con el modo puesto
+    /// sigue actualizando la misma fila.
+    #[test]
+    fn al_apagarlo_vuelven_los_carteles() {
+        let db = Db::in_memory().unwrap();
+        let dnd = DoNotDisturb::new(true);
+        assert!(!accept(&db, &dnd, &mut una(3, 1), false));
+        assert!(
+            !accept(&db, &dnd, &mut una(3, 1), true),
+            "el reemplazo tampoco avisa"
+        );
+        assert_eq!(
+            db.list(false, 10).unwrap().len(),
+            1,
+            "el reemplazo reusa la fila"
+        );
+
+        dnd.set(false, |_| {});
+        assert!(accept(&db, &dnd, &mut una(4, 1), false));
+    }
 
     #[test]
     fn el_icono_explicito_gana() {
@@ -400,14 +531,26 @@ mod tests {
     fn sin_icono_se_usa_la_imagen_del_hint() {
         let mut hints = HashMap::new();
         hints.insert("image-path".to_string(), Value::new("/tmp/foto.png"));
-        assert_eq!(resolve_icon(String::new(), "Cualquiera", &hints), "/tmp/foto.png");
+        assert_eq!(
+            resolve_icon(String::new(), "Cualquiera", &hints),
+            "/tmp/foto.png"
+        );
     }
 
     #[test]
     fn ultimo_recurso_el_nombre_de_la_aplicacion() {
         let hints = HashMap::new();
-        assert_eq!(resolve_icon(String::new(), "Telegram Desktop", &hints), "telegram-desktop");
-        assert_eq!(resolve_icon(String::new(), "Google Chrome", &hints), "google-chrome");
-        assert_eq!(resolve_icon(String::new(), "Resonance", &hints), "resonance");
+        assert_eq!(
+            resolve_icon(String::new(), "Telegram Desktop", &hints),
+            "telegram-desktop"
+        );
+        assert_eq!(
+            resolve_icon(String::new(), "Google Chrome", &hints),
+            "google-chrome"
+        );
+        assert_eq!(
+            resolve_icon(String::new(), "Resonance", &hints),
+            "resonance"
+        );
     }
 }
