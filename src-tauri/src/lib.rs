@@ -1,5 +1,6 @@
 mod banner;
 mod db;
+mod do_not_disturb;
 mod server;
 
 use std::cell::RefCell;
@@ -157,7 +158,9 @@ async fn dismiss_notification(app: AppHandle, id: i64, notif_id: u32) {
 
 /// Marca leída una notificación del historial, si la base pudo abrirse.
 async fn mark_read(app: &AppHandle, history_id: i64) {
-    let db = app.try_state::<Arc<Db>>().map(|state| state.inner().clone());
+    let db = app
+        .try_state::<Arc<Db>>()
+        .map(|state| state.inner().clone());
     if let Some(db) = db {
         server::mark_read(&db, history_id).await;
     }
@@ -373,8 +376,14 @@ mod tests {
     /// mientras se acomoda el texto, o una pila más alta que la pantalla.
     #[test]
     fn el_tamano_del_cartel_queda_dentro_de_lo_mostrable() {
-        assert_eq!(banner_size(BANNER_WIDTH, 0), (BANNER_WIDTH, BANNER_MIN_HEIGHT));
-        assert_eq!(banner_size(BANNER_WIDTH, -40), (BANNER_WIDTH, BANNER_MIN_HEIGHT));
+        assert_eq!(
+            banner_size(BANNER_WIDTH, 0),
+            (BANNER_WIDTH, BANNER_MIN_HEIGHT)
+        );
+        assert_eq!(
+            banner_size(BANNER_WIDTH, -40),
+            (BANNER_WIDTH, BANNER_MIN_HEIGHT)
+        );
         assert_eq!(
             banner_size(BANNER_WIDTH, 99_999),
             (BANNER_WIDTH, BANNER_MAX_HEIGHT)
