@@ -30,3 +30,26 @@ jobs:
     # también un `^2.5.0` que ya se cumple con la 2.5.
     with:
       bibliotecas_cortan: true
+      # Las pruebas de Rust corren en `revisar` y de esa misma corrida sale la
+      # cobertura que se le pasa a Sonar. Sin esto, Sonar no ve el Rust como
+      # código a cubrir —1.382 líneas y 107 «a cubrir», todas de TypeScript— y
+      # un PR que sólo toca Rust pasa la puerta sin que se mida nada (#37).
+      pruebas_rust: -p vasak-flare-daemon
+      # Lo que pide el grafo en Linux, mirado con `cargo tree -i`, no la lista
+      # de Tauri:
+      #
+      #   libwebkit2gtk-4.1-dev   webkit2gtk, gtk3, soup3 y los `.pc` de la
+      #                           pila de GTK; trae también `dbus-1`, que pide
+      #                           `libdbus-sys` por `tao`
+      #   libgtk-layer-shell-dev  `gtk-layer-shell`, dependencia directa: la
+      #                           notificación va en la capa del compositor
+      #   libsqlite3-dev          `rusqlite` sin `bundled` enlaza la del sistema
+      #   lld                     `src-tauri/.cargo/config.toml` enlaza con
+      #                           `-fuse-ld=lld`, y la imagen del runner no lo trae
+      #   build-essential         el compilador de C de los `-sys`
+      paquetes_rust: >-
+        libwebkit2gtk-4.1-dev
+        libgtk-layer-shell-dev
+        libsqlite3-dev
+        lld
+        build-essential
