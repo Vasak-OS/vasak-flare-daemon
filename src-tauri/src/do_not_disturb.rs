@@ -126,3 +126,198 @@ impl DoNotDisturbInterface {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// El nombre de la interfaz en el bus, como lo escribe el escritorio: es
+    /// contrato, y la prueba del bus lo usa tal cual.
+    const INTERFACE: &str = "org.vasak.Notifications.DoNotDisturb";
+
+    /// La prueba principal del modo: con «No molestar» una notificación normal
+    /// (o baja) no tiene cartel, una crítica sí; apagado, todas lo tienen.
+    #[test]
+    fn con_no_molestar_solo_las_criticas_tienen_cartel() {
+        let dnd = DoNotDisturb::new(true);
+        assert!(!dnd.allows_banner(0), "una baja no muestra cartel");
+        assert!(!dnd.allows_banner(1), "una normal no muestra cartel");
+        assert!(
+            dnd.allows_banner(URGENCY_CRITICAL),
+            "una crítica pasa igual"
+        );
+
+        dnd.set(false, |_| {});
+        for urgency in 0..=URGENCY_CRITICAL {
+            assert!(
+                dnd.allows_banner(urgency),
+                "apagado, la urgencia {urgency} vuelve a avisar"
+            );
+        }
+    }
+
+    #[test]
+    fn poner_el_modo_devuelve_el_anterior() {
+        let dnd = DoNotDisturb::default();
+        assert!(!dnd.set(true, |_| {}));
+        assert!(dnd.set(true, |_| {}));
+        assert!(dnd.set(false, |_| {}));
+        assert!(!dnd.is_enabled());
+    }
+
+    /// Dos cambios a la vez: lo que queda en el disco es lo que quedó en
+    /// memoria. A queda escribiendo despacio mientras B entra; sin el candado,
+    /// B intercambia y escribe en el medio y A pisa el disco con un valor que
+    /// la memoria ya no tiene.
+    #[test]
+    fn el_disco_y_la_memoria_no_se_separan() {
+        let dnd = Arc::new(DoNotDisturb::default());
+        let disk = Arc::new(Mutex::new(false));
+        let (b_starting, wait_for_b) = std::sync::mpsc::channel::<()>();
+
+        let a = {
+            let dnd = dnd.clone();
+            let disk = disk.clone();
+            std::thread::spawn(move || {
+                dnd.set(true, |value| {
+                    wait_for_b.recv().unwrap();
+                    // Tiempo de sobra para que B termine, si nada lo frena.
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    *disk.lock().unwrap() = value;
+                });
+            })
+        };
+        // Que A ya esté adentro de `set` antes de que B arranque.
+        while !dnd.is_enabled() {
+            std::thread::yield_now();
+        }
+        let b = {
+            let dnd = dnd.clone();
+            let disk = disk.clone();
+            std::thread::spawn(move || {
+                b_starting.send(()).unwrap();
+                dnd.set(false, |value| *disk.lock().unwrap() = value);
+            })
+        };
+        a.join().unwrap();
+        b.join().unwrap();
+
+        assert_eq!(*disk.lock().unwrap(), dnd.is_enabled());
+    }
+
+    /// El disco se toca sólo cuando el modo cambia de verdad.
+    #[test]
+    fn se_escribe_solo_si_cambia() {
+        let dnd = DoNotDisturb::default();
+        let writes = Cell::new(0);
+        let persist = |_| writes.set(writes.get() + 1);
+
+        dnd.set(false, persist);
+        assert_eq!(writes.get(), 0, "apagar lo apagado no escribe");
+        dnd.set(true, persist);
+        dnd.set(true, persist);
+        assert_eq!(writes.get(), 1, "prenderlo dos veces escribe una");
+    }
+
+    /// Un `dbus-daemon` propio para la prueba: nunca se toca el bus de la
+    /// sesión, donde está el demonio instalado. Sin `dbus-daemon` en la máquina
+    /// la prueba lo dice y no hace nada.
+    struct PrivateBus {
+        address: String,
+        child: std::process::Child,
+        dir: std::path::PathBuf,
+    }
+
+    impl PrivateBus {
+        fn start() -> Option<Self> {
+            use std::io::BufRead;
+            let dir = std::env::temp_dir().join(format!("flare-dnd-bus-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).ok()?;
+            let mut child = std::process::Command::new("dbus-daemon")
+                .args([
+                    "--session",
+                    "--nofork",
+                    "--print-address=1",
+                    &format!("--address=unix:dir={}", dir.display()),
+                ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok()?;
+            let mut line = String::new();
+            std::io::BufReader::new(child.stdout.take()?)
+                .read_line(&mut line)
+                .ok()?;
+            Some(Self {
+                address: line.trim().to_string(),
+                child,
+                dir,
+            })
+        }
+    }
+
+    impl Drop for PrivateBus {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// El contrato que usa el escritorio, por el bus: `SetEnabled` devuelve el
+    /// anterior, `Enabled` lo refleja, el cambio llega por `PropertiesChanged`
+    /// y queda guardado para la próxima sesión.
+    #[tokio::test]
+    async fn el_modo_se_pone_y_se_avisa_por_el_bus() {
+        use futures_util::StreamExt;
+
+        let Some(bus) = PrivateBus::start() else {
+            eprintln!("sin dbus-daemon: no se prueba el contrato por el bus");
+            return;
+        };
+        let db = Arc::new(Db::in_memory().unwrap());
+        let _server = zbus::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .serve_at(
+                "/org/vasak/Notifications",
+                DoNotDisturbInterface {
+                    state: Arc::new(DoNotDisturb::default()),
+                    db: db.clone(),
+                },
+            )
+            .unwrap()
+            .name("org.vasak.Notifications")
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let client = zbus::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let proxy = zbus::Proxy::new(
+            &client,
+            "org.vasak.Notifications",
+            "/org/vasak/Notifications",
+            INTERFACE,
+        )
+        .await
+        .unwrap();
+        let mut changes = proxy.receive_property_changed::<bool>("Enabled").await;
+
+        let previous: bool = proxy.call("SetEnabled", &(true,)).await.unwrap();
+        assert!(!previous, "antes estaba apagado");
+
+        let change = tokio::time::timeout(std::time::Duration::from_secs(5), changes.next())
+            .await
+            .expect("el cambio llega por PropertiesChanged")
+            .expect("el flujo sigue abierto");
+        assert!(change.get().await.unwrap());
+        assert!(proxy.get_property::<bool>("Enabled").await.unwrap());
+        assert!(db.do_not_disturb().unwrap(), "queda guardado");
+
+        let previous: bool = proxy.call("SetEnabled", &(false,)).await.unwrap();
+        assert!(previous, "el anterior es el que había puesto");
+    }
+}
