@@ -1,6 +1,6 @@
 [package]
 name = "vasak-flare-daemon"
-version = "0.6.0"
+version = "0.6.1"
 description = "Persistent freedesktop notification daemon for VasakOS"
 authors = ["Vasak Group", "Joaquin (Pato) Decima"]
 edition = "2021"
@@ -29,7 +29,7 @@ tauri-plugin-vicons = "2"
 tauri-plugin-config-manager = "2"
 gtk = "0.18"
 gtk-layer-shell = { version = "0.8", features = ["v0_5", "v0_6"] }
-base64 = "0.22"
+base64 = "0.23"
 zbus = { version = "4", features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 rusqlite = { version = "0.40" }
