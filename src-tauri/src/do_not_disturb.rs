@@ -125,4 +125,3 @@ impl DoNotDisturbInterface {
         previous
     }
 }
-
