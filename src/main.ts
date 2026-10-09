@@ -4,6 +4,7 @@ import { createPinia } from 'pinia';
 import { createApp } from 'vue';
 import App from '@/App.vue';
 import { sanearUrl } from '@/tools/csp';
+import { retry, withDeadline } from '@/tools/startup';
 import '@/assets/main.css';
 
 // Una violación de CSP no se ve: el recurso no carga y la interfaz queda a
@@ -56,32 +57,20 @@ const pinia = createPinia();
 // primera—, pero la espera total sigue acotada por ese plazo: el reintento no
 // toca la garantía de que la aplicación monta aunque el backend no conteste.
 const PLAZO_TRADUCCIONES_MS = 1500;
+const MAX_INTENTOS = 3;
 
 async function cargarTraducciones(): Promise<void> {
-	const MAX_INTENTOS = 3;
-	const ESPERA_BASE_MS = 500;
-	const ESPERA_MAX_MS = 1500;
-
-	const intentar = async () => {
-		for (let intento = 0; intento < MAX_INTENTOS; intento++) {
-			try {
-				await I18n.getInstance().load();
-				return;
-			} catch (error) {
+	await withDeadline(
+		retry(
+			() => I18n.getInstance().load(),
+			{ attempts: MAX_INTENTOS, baseMs: 500, maxMs: 1500 },
+			(error, intento) =>
 				avisar(
 					`no se pudieron cargar las traducciones (intento ${intento + 1}/${MAX_INTENTOS}): ${String(error)}`
-				);
-				if (intento === MAX_INTENTOS - 1) return;
-				const espera = Math.min(ESPERA_BASE_MS * 2 ** intento, ESPERA_MAX_MS);
-				await new Promise((resolve) => setTimeout(resolve, espera));
-			}
-		}
-	};
-
-	await Promise.race([
-		intentar(),
-		new Promise((resolve) => setTimeout(resolve, PLAZO_TRADUCCIONES_MS)),
-	]);
+				)
+		),
+		PLAZO_TRADUCCIONES_MS
+	);
 }
 
 await cargarTraducciones();
