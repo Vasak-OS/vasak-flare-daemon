@@ -200,10 +200,7 @@ onMounted(async () => {
 		// Si vence el plazo y después la lectura falla, ese rechazo no puede
 		// quedar sin atender.
 		lectura.catch(() => {});
-		await Promise.race([
-			lectura,
-			new Promise((resolve) => setTimeout(resolve, PLAZO_CONFIG_MS)),
-		]);
+		await Promise.race([lectura, new Promise((resolve) => setTimeout(resolve, PLAZO_CONFIG_MS))]);
 	} catch (error) {
 		console.error('Error al cargar configuración', error);
 	}
