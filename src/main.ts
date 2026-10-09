@@ -4,6 +4,7 @@ import { createPinia } from 'pinia';
 import { createApp } from 'vue';
 import App from '@/App.vue';
 import { sanearUrl } from '@/tools/csp';
+import { retry, withDeadline } from '@/tools/startup';
 import '@/assets/main.css';
 
 // Una violación de CSP no se ve: el recurso no carga y la interfaz queda a
@@ -51,16 +52,28 @@ const pinia = createPinia();
 // hay `onMounted`, no se escuchan los eventos de notificación y el cartel no
 // aparece nunca—. Un idioma que tarda es un cartel con las claves crudas;
 // un idioma que se cuelga era un escritorio sin notificaciones.
+//
+// Un intento que falla se reintenta —el demonio puede tardar o no escuchar a la
+// primera—, pero la espera total sigue acotada por ese plazo: el reintento no
+// toca la garantía de que la aplicación monta aunque el backend no conteste.
 const PLAZO_TRADUCCIONES_MS = 1500;
+const MAX_INTENTOS = 3;
 
-await Promise.race([
-	I18n.getInstance()
-		.load()
-		.catch((error) => {
-			avisar(`no se pudieron cargar las traducciones: ${String(error)}`);
-		}),
-	new Promise((resolve) => setTimeout(resolve, PLAZO_TRADUCCIONES_MS)),
-]);
+async function cargarTraducciones(): Promise<void> {
+	await withDeadline(
+		retry(
+			() => I18n.getInstance().load(),
+			{ attempts: MAX_INTENTOS, baseMs: 500, maxMs: 1500 },
+			(error, intento) =>
+				avisar(
+					`no se pudieron cargar las traducciones (intento ${intento + 1}/${MAX_INTENTOS}): ${String(error)}`
+				)
+		),
+		PLAZO_TRADUCCIONES_MS
+	);
+}
+
+await cargarTraducciones();
 
 app.use(pinia);
 
