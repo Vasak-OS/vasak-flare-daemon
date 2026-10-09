@@ -124,6 +124,10 @@ async function declaredTokens() {
 		shadow: strip('shadow-'),
 		text: strip('text-'),
 		ease: strip('ease-'),
+		// Las utilidades propias de la librería (`@utility window-border`,
+		// `shell-blur`…): no salen de una variable del `@theme` sino de un
+		// bloque `@utility`, y también se usan por su nombre.
+		utilities: new Set([...css.matchAll(/@utility\s+([a-z0-9-]+)\s*\{/g)].map((m) => m[1] as string)),
 	};
 }
 
@@ -191,6 +195,38 @@ describe('lo que se usa existe', () => {
 		expect(tokens.shadow).toContain('surface-l');
 		expect(tokens.text).toContain('label-m');
 		expect(tokens.ease).toContain('ui-out');
+		// El canto de afuera de las ventanas y los emergentes (vue-libvasak
+		// 2.16), que usa el cartel.
+		expect(tokens.utilities).toContain('window-border');
+	});
+
+	test('las utilidades de ventana de la librería que se usan están declaradas', async () => {
+		// `window-border` y `shell-blur` no nombran un token: son un bloque
+		// `@utility` de `tokens.css`. Si la librería instalada no lo trae, la
+		// clase no emite nada y el cartel se queda sin borde, sin aviso.
+		// Sólo dentro de un `class="…"`: `window-close-symbolic` es el nombre de
+		// un icono del tema, no una clase.
+		const { utilities } = await declaredTokens();
+		const utility = new RegExp(`(?<![\\w-])${VARIANTS}(window-[a-z0-9-]+|shell-[a-z0-9-]+|overlay-fade-[a-z0-9-]+)${END}`, 'g');
+		const dead: string[] = [];
+		for (const file of sources('**/*.vue')) {
+			for (const [, value] of (await read(SOURCE + file)).matchAll(/(?<![:\w-])class="([^"]*)"/g)) {
+				for (const m of (value as string).matchAll(utility)) {
+					if (!utilities.has(m[1] as string)) dead.push(`${file}: ${m[0]}`);
+				}
+			}
+		}
+
+		expect(dead).toEqual([]);
+	});
+
+	test('la guardia de utilidades ve una que no existe', async () => {
+		const { utilities } = await declaredTokens();
+		const utility = new RegExp(`(?<![\\w-])${VARIANTS}(window-[a-z0-9-]+|shell-[a-z0-9-]+|overlay-fade-[a-z0-9-]+)${END}`, 'g');
+		const found = [...'window-border hover:window-borde shell-blur bg-ui-shell'.matchAll(utility)].map((m) => m[1] as string);
+
+		expect(found).toEqual(['window-border', 'window-borde', 'shell-blur']);
+		expect(found.filter((name) => !utilities.has(name))).toEqual(['window-borde']);
 	});
 
 	test('ninguna clase nombra un color del taller que no esté declarado', async () => {
