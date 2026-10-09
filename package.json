@@ -1,7 +1,7 @@
 {
 	"name": "vasak-flare-daemon",
 	"private": true,
-	"version": "0.4.9",
+	"version": "0.7.0",
 	"type": "module",
 	"scripts": {
 		"dev": "bunx --bun vite",
@@ -15,31 +15,32 @@
 	},
 	"dependencies": {
 		"@tailwindcss/vite": "^4.3.3",
-		"@tauri-apps/api": "^2.11.1",
-		"@tauri-apps/plugin-shell": "^2.3.6",
-		"@vasakgroup/plugin-config-manager": "~2.6.1",
-		"@vasakgroup/plugin-vicons": "^2.2.1",
-		"@vasakgroup/tauri-plugin-i18n": "^2.3.0",
-		"path": "^0.12.7",
+		"@tauri-apps/api": "^2.12.2",
+		"@tauri-apps/plugin-shell": "^2.4.1",
+		"@vasakgroup/plugin-config-manager": "^2.11.0",
+		"@vasakgroup/plugin-vicons": "^2.2.2",
+		"@vasakgroup/tauri-plugin-i18n": "^2.3.1",
+		"@vasakgroup/vue-libvasak": "^2.16.0",
 		"pinia": "^3.0.4",
-		"url": "^0.11.4",
 		"vue": "^3.5.43"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.5.14",
+		"@biomejs/biome": "^2.5.15",
 		"@tailwindcss/postcss": "^4.3.3",
-		"@tauri-apps/cli": "^2.11.5",
-		"@types/node": "^25.9.8",
+		"@tauri-apps/cli": "^2.12.1",
+		"@types/node": "^26.6.4",
 		"@vitejs/plugin-vue": "^6.0.9",
-		"postcss": "^8.5.28",
+		"postcss": "^8.5.29",
 		"tailwindcss": "^4.3.3",
 		"typescript": "^5.9.3",
-		"vite": "^7.3.6",
-		"vue-tsc": "^3.3.11"
+		"vite": "^8.3.4",
+		"vue-tsc": "^3.3.12"
 	},
 	"vasak": {
 		"bibliotecasAtrasadas": {
-			"@vasakgroup/plugin-config-manager": "La 2.7.0 declara pinia ^4 y esta aplicación está en pinia 3: subir el rango arrastra un salto mayor ajeno. Instalar no falla —bun avisa «incorrect peer dependency» y sigue—, pero el manifiesto pasa a declarar un complemento que dice necesitar una mayor que acá no está. Por eso el rango es ~2.6.1 y no ^2.6.1, que volvería a alcanzar la 2.7.0 en el próximo `bun update`. Se saca al subir a pinia 4. **El paquete de Rust sí está en la 2.7.0**: es otro manifiesto, no pasa por pinia, y antes de la 2.6.0 borraba de `vasak.conf` las claves que su modelo no conoce."
+			"pinia": "La 4 es un salto mayor de una biblioteca que usa el taller entero: el resto de las aplicaciones está en pinia 3 y subir sólo ésta parte el vocabulario compartido. Va en su propio PR, coordinado con el resto. config-manager 2.9 acepta las dos, así que ya no frena a nadie.",
+			"typescript": "La 7 es el compilador nativo y no expone la API de JavaScript que lee vue-tsc 3: `vue-tsc --noEmit` se cae con ERR_PACKAGE_PATH_NOT_EXPORTED antes de mirar un archivo. El rango ^5.9.3 no alcanza la 7. Se sube cuando vue-tsc publique soporte para TypeScript 7.",
+			"zbus (crate de Rust)": "Va en la 4. La 5 cambia la API del servidor de D-Bus, que es el corazón de este demonio: `SignalContext` pasa a `SignalEmitter` y `Message::method` a `Message::method_call`, y la compilación se cae. El arreglo es mecánico, pero lo que hay que verificar —que `Notify`, `CloseNotification`, `ActionInvoked` y `NotificationClosed` sigan hablando igual con las aplicaciones— no lo mira ninguna prueba automática. Va en su propio PR, probado con notify-send y una aplicación real en un bus privado."
 		}
 	}
 }
