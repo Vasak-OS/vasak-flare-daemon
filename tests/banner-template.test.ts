@@ -59,3 +59,44 @@ describe('los botones del cartel', () => {
 		expect(root).toContain('@keydown.space');
 	});
 });
+
+/**
+ * El canto de afuera del cartel es el que eligió la persona.
+ *
+ * El cartel es un emergente del escritorio, como el panel y el centro de
+ * control: su borde de afuera sigue el grosor y el color que se eligen en
+ * Configuración (`style.border` de vasak.conf, que el config-manager escribe en
+ * `--window-border-width` y `--ui-window-border`). Eso lo trae la utilidad
+ * `window-border` de la librería (vue-libvasak 2.16). Con `border
+ * border-ui-line` el cartel se quedaba con el canto fino de siempre aunque el
+ * resto del escritorio cambiara.
+ */
+describe('el canto de afuera del cartel', () => {
+	const rootClass = template.match(/<article\b[^>]*\sclass="([^"]*)"/)?.[1] ?? '';
+	const classes = rootClass.split(/\s+/).filter(Boolean);
+	const libraryTokens = readFileSync(
+		join(import.meta.dir, '..', 'node_modules/@vasakgroup/vue-libvasak/dist/tokens.css'),
+		'utf8'
+	);
+
+	test('la tarjeta se leyó', () => {
+		// Sin esto, una clase que no se encuentre deja la lista vacía y la
+		// prueba de abajo que dice «sin `border-ui-line`» pasa siempre.
+		expect(classes).toContain('bg-ui-shell');
+	});
+
+	test('el aviso usa el borde que se elige en Configuración (`window-border`)', () => {
+		expect(classes).toContain('window-border');
+	});
+
+	test('y no el canto fijo de adentro (`border border-ui-line`)', () => {
+		expect(classes).not.toContain('border-ui-line');
+		expect(classes).not.toContain('border');
+	});
+
+	test('la librería instalada declara la utilidad `window-border`', () => {
+		// Una clase que Tailwind no conoce no emite nada ni avisa: con una
+		// librería anterior a la 2.16 el cartel se quedaría sin borde.
+		expect(libraryTokens).toMatch(/@utility\s+window-border\s*\{/);
+	});
+});

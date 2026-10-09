@@ -16,8 +16,10 @@
  *
  * # La forma
  *
- * La tarjeta de Once UI: `rounded-corner-l`, canto `ui-line` y la sombra de
- * tres capas con la tinta del esquema. El tamaño, la posición y lo que dice
+ * La tarjeta de Once UI: `rounded-corner-l`, el canto de afuera
+ * (`window-border`: el grosor y el color que se eligen en Configuración, igual
+ * que las ventanas y el panel) y la sombra de tres capas con la tinta del
+ * esquema. El tamaño, la posición y lo que dice
  * son los de siempre: el icono de 40, el nombre de la aplicación, el título,
  * hasta tres líneas de cuerpo y las acciones.
  *
@@ -75,7 +77,7 @@ const clickable = computed(() => hasDefaultAction(props.notification));
 
 <template>
   <article
-    class="@container cursor-pointer overflow-hidden rounded-corner-l border border-ui-line bg-ui-shell p-3 text-tx-main shadow-surface-m"
+    class="@container cursor-pointer overflow-hidden rounded-corner-l window-border bg-ui-shell p-3 text-tx-main shadow-surface-m"
     :role="clickable ? 'button' : undefined"
     :tabindex="clickable ? 0 : undefined"
     :data-urgency="notification.urgency"
