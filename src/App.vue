@@ -245,13 +245,30 @@ async function push(notification: FlareNotification) {
 
 onMounted(async () => {
 	// Load the theme (dark/light + scheme) like the rest of VasakOS.
+	//
+	// Con plazo, y no por cosmético: esto va **antes** de suscribirse a los
+	// eventos de notificación, así que una configuración que no resuelve dejaría
+	// este webview escuchando nada — el cartel que motivó su creación no
+	// aparecería nunca, que es justo el final que los comentarios de `main.ts`
+	// dicen que hay que evitar. Si el plazo se vence, se sigue con los colores
+	// por omisión; si la lectura termina después, el tema se aplica igual.
+	const PLAZO_CONFIG_MS = 2000;
+	const configStore = useConfigStore();
 	try {
-		const configStore = useConfigStore();
-		await configStore.loadConfig();
-		unlisteners.push(await listen('config-changed', () => void configStore.loadConfig()));
+		const lectura = configStore.loadConfig();
+		// Si vence el plazo y después la lectura falla, ese rechazo no puede
+		// quedar sin atender.
+		lectura.catch(() => {});
+		await Promise.race([
+			lectura,
+			new Promise((resolve) => setTimeout(resolve, PLAZO_CONFIG_MS)),
+		]);
 	} catch (error) {
 		console.error('Error al cargar configuración', error);
 	}
+	// Fuera del `try`: aunque la primera lectura falle o venza el plazo, los
+	// cambios de después tienen que poder aplicarse.
+	unlisteners.push(await listen('config-changed', () => void configStore.loadConfig()));
 
 	// El alto definitivo se conoce tarde: recién cuando cargó el ícono y el
 	// texto terminó de acomodarse. Medir una sola vez dejaba carteles cortados.

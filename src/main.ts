@@ -51,16 +51,40 @@ const pinia = createPinia();
 // hay `onMounted`, no se escuchan los eventos de notificación y el cartel no
 // aparece nunca—. Un idioma que tarda es un cartel con las claves crudas;
 // un idioma que se cuelga era un escritorio sin notificaciones.
+//
+// Un intento que falla se reintenta —el demonio puede tardar o no escuchar a la
+// primera—, pero la espera total sigue acotada por ese plazo: el reintento no
+// toca la garantía de que la aplicación monta aunque el backend no conteste.
 const PLAZO_TRADUCCIONES_MS = 1500;
 
-await Promise.race([
-	I18n.getInstance()
-		.load()
-		.catch((error) => {
-			avisar(`no se pudieron cargar las traducciones: ${String(error)}`);
-		}),
-	new Promise((resolve) => setTimeout(resolve, PLAZO_TRADUCCIONES_MS)),
-]);
+async function cargarTraducciones(): Promise<void> {
+	const MAX_INTENTOS = 3;
+	const ESPERA_BASE_MS = 500;
+	const ESPERA_MAX_MS = 1500;
+
+	const intentar = async () => {
+		for (let intento = 0; intento < MAX_INTENTOS; intento++) {
+			try {
+				await I18n.getInstance().load();
+				return;
+			} catch (error) {
+				avisar(
+					`no se pudieron cargar las traducciones (intento ${intento + 1}/${MAX_INTENTOS}): ${String(error)}`
+				);
+				if (intento === MAX_INTENTOS - 1) return;
+				const espera = Math.min(ESPERA_BASE_MS * 2 ** intento, ESPERA_MAX_MS);
+				await new Promise((resolve) => setTimeout(resolve, espera));
+			}
+		}
+	};
+
+	await Promise.race([
+		intentar(),
+		new Promise((resolve) => setTimeout(resolve, PLAZO_TRADUCCIONES_MS)),
+	]);
+}
+
+await cargarTraducciones();
 
 app.use(pinia);
 
