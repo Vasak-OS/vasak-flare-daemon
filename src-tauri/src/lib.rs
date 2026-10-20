@@ -209,29 +209,24 @@ pub(crate) fn show_banner_window(app: &AppHandle) {
 
 #[tauri::command]
 fn show_banner(app: AppHandle) -> Result<(), String> {
-    banner::keep_alive();
     show_banner_window(&app);
     Ok(())
 }
 
 #[tauri::command]
 fn hide_banner(app: AppHandle) -> Result<(), String> {
-    let result = app
-        .run_on_main_thread({
-            let _app = app.clone();
-            move || {
-                BANNER_WIN.with(|w| {
-                    if let Some(win) = w.borrow().as_ref() {
-                        win.hide();
-                    }
-                });
+    // Se esconde, no se destruye: el webview queda residente y se reusa en la
+    // próxima notificación. Destruirlo dejaba vivo el WebKitWebProcess
+    // re-parentado —decenas colgados por sesión— y recrearlo cada vez costaba la
+    // ventana de carga.
+    app.run_on_main_thread(|| {
+        BANNER_WIN.with(|w| {
+            if let Some(win) = w.borrow().as_ref() {
+                win.hide();
             }
-        })
-        .map_err(|e| e.to_string());
-    // Se escondió el último cartel: si no llega nada en un rato, el webview
-    // entero se desarma y el demonio vuelve a no costar nada.
-    banner::schedule_teardown(&app);
-    result
+        });
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// Un error de la página, al mismo registro que el resto.
@@ -249,6 +244,26 @@ fn trace_js(message: String) {
 #[tauri::command]
 fn banner_ready() -> Vec<db::StoredNotification> {
     banner::take_pending()
+}
+
+/// Afina WebKit para el cartel: es estático, chico y efímero, no necesita los
+/// cachés ni la GPU de un navegador. Baja el piso de memoria del webview.
+fn tune_webkit(webview: &webkit2gtk::WebView) {
+    use webkit2gtk::{
+        CacheModel, HardwareAccelerationPolicy, SettingsExt, WebContextExt, WebViewExt,
+    };
+    if let Some(settings) = WebViewExt::settings(webview) {
+        settings.set_enable_developer_extras(false);
+        settings.set_enable_back_forward_navigation_gestures(false);
+        settings.set_enable_webgl(false);
+        // Un cartel estático y chico no gana nada con la GPU, y sin aceleración se
+        // ahorra un proceso de GPU y los buffers DMABUF.
+        settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
+    }
+    if let Some(context) = WebViewExt::web_context(webview) {
+        // No navega páginas: con el caché mínimo alcanza.
+        context.set_cache_model(CacheModel::DocumentViewer);
+    }
 }
 
 /// Reparent the banner webview into a wlr-layer-shell window anchored
@@ -301,6 +316,9 @@ pub(crate) fn setup_banner_layer(window: &WebviewWindow) {
                 // Sin pedido de tamaño propio: el que manda es el de la ventana,
                 // que cambia con la cantidad de carteles apilados.
                 webview.set_size_request(-1, -1);
+                if let Ok(wv) = webview.clone().dynamic_cast::<webkit2gtk::WebView>() {
+                    tune_webkit(&wv);
+                }
                 layer_win.add(webview);
                 gtk_win.hide();
                 BANNER_WIN.with(|w| *w.borrow_mut() = Some(layer_win));

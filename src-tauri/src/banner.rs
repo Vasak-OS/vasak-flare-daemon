@@ -1,24 +1,26 @@
-//! El cartel de notificaciones, creado cuando hace falta y desarmado después.
+//! El cartel de notificaciones: creado la primera vez que hace falta, y después
+//! **residente y oculto**, reusado.
 //!
-//! La ventana del banner era la partida más cara de todo el demonio: declarada
-//! en `tauri.conf.json`, Tauri la construía al arrancar y el WebKit completo
-//! —proceso de red incluido— quedaba residente la sesión entera para dibujar
-//! un cartel que aparece unos segundos por día. Medido en una sesión real:
-//! ~250 MB entre el WebKitWebProcess y el WebKitNetworkProcess de una ventana
-//! que ni siquiera estaba visible.
+//! La ventana del banner era la partida más cara del demonio: declarada en
+//! `tauri.conf.json`, Tauri la construía al arrancar y el WebKit completo quedaba
+//! residente la sesión entera para un cartel que aparece unos segundos por día.
+//! Por eso se crea tarde, a demanda: una notificación no es un método de entrada,
+//! unos cientos de milisegundos de más son invisibles.
 //!
-//! La objeción obvia es la latencia: el webview se creaba al arrancar para que
-//! el primer cartel saliera al instante. Pero una notificación no es un método
-//! de entrada — llegar unos cientos de milisegundos tarde es invisible, y las
-//! ráfagas (un chat activo) no pagan nada porque la ventana se queda viva
-//! mientras haya movimiento. Sólo se desarma tras [`IDLE`] sin carteles.
+//! Lo que **no** se hace es desarmarlo al quedar en silencio. Se intentó —crear
+//! al primer cartel y destruir tras un rato de inactividad— y cada ciclo
+//! crear→destruir dejaba vivo el `WebKitWebProcess` del webview re-parentado en
+//! la ventana de capa (wry/GTK no lo reapea): una sesión real juntaba decenas de
+//! procesos colgados. Así que, una vez creado, el cartel se **esconde** entre
+//! notificaciones y se **reusa**: un solo proceso, y además sale al instante. El
+//! único que lo destruye es el vigilante de arranque, y sólo si el webview nunca
+//! llegó a cargar (roto), para poder reintentar.
 //!
-//! Lo que sí hay que resolver al crear tarde es la ventana de carga: entre que
-//! la notificación llega y el frontend termina de montar pasan unos cientos de
-//! milisegundos, y un `emit` en ese hueco se pierde en el aire. De ahí la cola:
-//! [`deliver`] encola mientras el webview calienta, y el frontend al montar
-//! llama a `banner_ready`, que la drena. El mismo mutex serializa ambos lados,
-//! así que una notificación no puede caer justo en el medio.
+//! Al crear tarde hay una ventana de carga: entre que la notificación llega y el
+//! frontend termina de montar pasan unos cientos de milisegundos, y un `emit` en
+//! ese hueco se perdería. De ahí la cola: [`deliver`] encola mientras el webview
+//! calienta, y el frontend al montar llama a `banner_ready`, que la drena. El
+//! mismo mutex serializa ambos lados, así que una notificación no cae en el medio.
 
 use gtk::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -29,26 +31,6 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::db::StoredNotification;
 
-/// Cuánto silencio desarma el webview.
-///
-/// Corto de más y una conversación lenta paga la creación en cada mensaje;
-/// largo de más y el ahorro no existe. Dos minutos cubre el ritmo de un chat
-/// sin convertir el demonio en lo que era antes.
-const IDLE_DEFAULT: Duration = Duration::from_secs(120);
-
-/// El plazo real, con un escape para poder probarlo sin esperar dos minutos.
-///
-/// `VASAK_FLARE_IDLE_SECS` existe para eso: verificar que la memoria vuelve es
-/// la mitad del sentido de este módulo, y sin un plazo corto la comprobación
-/// tarda más que el ciclo de compilación.
-fn idle() -> Duration {
-    std::env::var("VASAK_FLARE_IDLE_SECS")
-        .ok()
-        .and_then(|valor| valor.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(IDLE_DEFAULT)
-}
-
 /// Si el frontend nunca avisó que está listo, algo salió mal al cargar.
 /// Sin este plazo, un webview roto quedaría residente para siempre — que es
 /// exactamente el estado del que venimos. Lo encolado queda en el historial.
@@ -58,15 +40,10 @@ const WARMUP_LIMIT: Duration = Duration::from_secs(300);
 static READY: AtomicBool = AtomicBool::new(false);
 /// Evita que dos notificaciones simultáneas construyan dos ventanas.
 static CREATING: AtomicBool = AtomicBool::new(false);
-/// Cambia con cada señal de vida; el desarme sólo procede si nadie la movió.
-static GENERATION: AtomicU64 = AtomicU64::new(0);
-/// Cambia **sólo** al construir un webview.
-///
-/// El vigilante del arranque no puede usar `GENERATION`: ésa se mueve con cada
-/// notificación, así que si el frontend nunca avisaba y entraba otra
-/// notificación antes de los cinco minutos, el vigilante se daba por vencido y
-/// nadie programaba otro. El webview roto quedaba residente y la cola crecía
-/// sin techo, que es justo lo que el vigilante venía a evitar.
+/// Cambia **sólo** al construir un webview, para el vigilante de arranque: así
+/// cada creación tiene su propio vigilante y una creación nueva invalida al
+/// anterior, sin que una ráfaga de notificaciones lo haga darse por vencido y
+/// deje un webview roto residente con la cola creciendo sin techo.
 static CREATION: AtomicU64 = AtomicU64::new(0);
 
 /// Notificaciones que llegaron mientras el webview calentaba.
@@ -80,14 +57,8 @@ fn traza(mensaje: &str) {
     }
 }
 
-fn touch() -> u64 {
-    GENERATION.fetch_add(1, Ordering::SeqCst) + 1
-}
-
 /// Hace llegar una notificación al cartel, exista o no todavía.
 pub fn deliver(app: &AppHandle, stored: &StoredNotification) {
-    touch();
-
     // El mismo candado decide si se emite o se encola: sin él, una
     // notificación podría caer entre el `READY = true` y el drenado, y no
     // estar ni en la cola ni en la pantalla.
@@ -122,29 +93,6 @@ pub fn take_pending() -> Vec<StoredNotification> {
     READY.store(true, Ordering::SeqCst);
     traza(&format!("el cartel reclamó {} pendientes", pending.len()));
     std::mem::take(&mut *pending)
-}
-
-/// Marca actividad, para que el desarme por silencio no gane una carrera
-/// contra un cartel que se está mostrando.
-pub fn keep_alive() {
-    touch();
-}
-
-/// La interfaz escondió el último cartel: si no pasa nada en [`IDLE`], se
-/// desarma todo.
-pub fn schedule_teardown(app: &AppHandle) {
-    traza("se escondió el último cartel; arranca el reloj del desarme");
-    let generation = touch();
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(idle()).await;
-        if GENERATION.load(Ordering::SeqCst) == generation {
-            traza("silencio: se desarma el cartel");
-            teardown(&app, Some(generation));
-        } else {
-            traza("hubo actividad: el cartel sigue vivo");
-        }
-    });
 }
 
 fn ensure_created(app: &AppHandle) {
@@ -204,7 +152,7 @@ fn ensure_created(app: &AppHandle) {
                 std::thread::sleep(WARMUP_LIMIT);
                 if !READY.load(Ordering::SeqCst) && CREATION.load(Ordering::SeqCst) == creacion {
                     traza("el cartel nunca avisó que cargó; se desarma");
-                    teardown(&watchdog, None);
+                    teardown(&watchdog);
                 }
             });
 
@@ -218,25 +166,18 @@ fn ensure_created(app: &AppHandle) {
     CREATING.store(false, Ordering::SeqCst);
 }
 
-/// Desarma el webview y la ventana de capa, en ese orden.
+/// Destruye un webview **roto** y su ventana de capa, en ese orden.
 ///
-/// Primero la ventana de Tauri: wry es el dueño del widget del webview y sabe
-/// destruirlo aunque viva re-parentado en la ventana de capa. Recién después
-/// se tira la cáscara de GTK, ya vacía. Al revés, GTK destruiría un widget que
-/// wry cree suyo, y ese doble dueño es un segfault en el hilo principal.
-fn teardown(app: &AppHandle, esperada: Option<u64>) {
+/// Sólo lo llama el vigilante de arranque, cuando el webview nunca avisó que
+/// cargó: hay que tirarlo para poder reintentar con uno nuevo. (En la vida normal
+/// el cartel no se destruye: se esconde y se reusa.) Primero la ventana de Tauri
+/// —wry es dueño del widget del webview y sabe destruirlo aunque viva
+/// re-parentado en la ventana de capa—, y recién después la cáscara de GTK, ya
+/// vacía: al revés, GTK destruiría un widget que wry cree suyo, y eso es un
+/// segfault en el hilo principal.
+fn teardown(app: &AppHandle) {
     let app = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
-        // La generación se revalida **acá dentro**, no sólo antes de encolar
-        // este cierre. Entre una cosa y la otra `deliver` puede haber emitido
-        // —READY todavía en true, así que no encoló nada— y destruir la ventana
-        // en ese hueco perdía la notificación sin dejar rastro.
-        if let Some(esperada) = esperada {
-            if GENERATION.load(Ordering::SeqCst) != esperada {
-                traza("llegó algo mientras se desarmaba: se cancela");
-                return;
-            }
-        }
         READY.store(false, Ordering::SeqCst);
         if let Some(window) = app.get_webview_window("banner") {
             let _ = window.destroy();
@@ -246,6 +187,6 @@ fn teardown(app: &AppHandle, esperada: Option<u64>) {
                 unsafe { win.destroy() };
             }
         });
-        traza("cartel desarmado");
+        traza("webview roto desarmado para reintentar");
     });
 }
