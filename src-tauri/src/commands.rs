@@ -7,13 +7,15 @@
 //! sólo bloquea sin informar. Lo testeable (el acotado del tamaño) se queda en
 //! `lib.rs`.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use gtk::prelude::*;
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+use crate::banner::{self, traza, CREATING, CREATION, READY, WARMUP_LIMIT};
 use crate::db::{self, Db};
-use crate::{banner, banner_size, server, BANNER_MIN_HEIGHT, BANNER_WIDTH, BANNER_WIN};
+use crate::{banner_size, server, BANNER_MIN_HEIGHT, BANNER_WIDTH, BANNER_WIN};
 
 /// Le pide al escritorio que traiga al frente la aplicación que mandó el aviso.
 ///
@@ -245,4 +247,103 @@ pub(crate) fn setup_banner_layer(window: &WebviewWindow) {
             }
         }
     }
+}
+
+/// Crea el cartel la primera vez que hace falta (y una sola): construye el
+/// webview, lo re-parentea en la ventana de capa y lo muestra. Un vigilante lo
+/// desarma sólo si nunca llegó a cargar.
+pub(crate) fn ensure_created(app: &AppHandle) {
+    if app.get_webview_window("banner").is_some() {
+        return;
+    }
+    if CREATING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let app = app.clone();
+    // Se construye desde este hilo, **no** dentro de `run_on_main_thread`.
+    //
+    // Tauri despacha la creación al bucle de eventos por su cuenta. Hacerlo a
+    // mano desde dentro de una vuelta del bucle de GTK reentra en él, y el
+    // webview quedaba a medio inicializar: la página cargaba —`Started` y
+    // `Finished` llegaban— pero su motor de JavaScript no ejecutaba nada, ni el
+    // módulo de la aplicación ni un `eval` inyectado desde Rust. Sin ese
+    // detalle esto parecía un problema del re-parenteo o de la carga de la
+    // página, y no era ninguno de los dos.
+    let built = WebviewWindowBuilder::new(&app, "banner", WebviewUrl::default())
+        .title("vasak-flare-daemon")
+        .inner_size(420.0, 72.0)
+        .decorations(false)
+        .transparent(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .always_on_top(true)
+        .visible(false)
+        .build();
+
+    match built {
+        Ok(window) => {
+            // El re-parenteo va en el hilo principal, la construcción no.
+            //
+            // Son dos requisitos opuestos y hay que respetar los dos: crear el
+            // webview desde dentro del bucle de GTK lo deja sin motor de
+            // JavaScript, y tocar GTK desde otro hilo aborta con «GTK may only
+            // be used from the main thread». Así que se construye acá y el
+            // trabajo de GTK se despacha allá.
+            let handle = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(ventana) = handle.get_webview_window("banner") {
+                    setup_banner_layer(&ventana);
+                }
+                // Mapear ahora, no cuando el frontend lo pida: una ventana sin
+                // mapear no carga la página, y sólo se llega acá porque hay algo
+                // que mostrar.
+                show_banner_window(&handle);
+            });
+
+            // Si el frontend nunca llega a `banner_ready`, esto desarma el
+            // webview roto en vez de dejarlo residente para siempre.
+            let watchdog = app.clone();
+            let creacion = CREATION.fetch_add(1, Ordering::SeqCst) + 1;
+            std::thread::spawn(move || {
+                std::thread::sleep(WARMUP_LIMIT);
+                if !READY.load(Ordering::SeqCst) && CREATION.load(Ordering::SeqCst) == creacion {
+                    traza("el cartel nunca avisó que cargó; se desarma");
+                    teardown(&watchdog);
+                }
+            });
+
+            let _ = window;
+        }
+        Err(error) => {
+            eprintln!("[flare] no se pudo crear el cartel: {error}");
+        }
+    }
+
+    CREATING.store(false, Ordering::SeqCst);
+}
+
+/// Destruye un webview **roto** y su ventana de capa, en ese orden.
+///
+/// Sólo lo llama el vigilante de arranque, cuando el webview nunca avisó que
+/// cargó: hay que tirarlo para poder reintentar con uno nuevo. (En la vida normal
+/// el cartel no se destruye: se esconde y se reusa.) Primero la ventana de Tauri
+/// —wry es dueño del widget del webview y sabe destruirlo aunque viva
+/// re-parentado en la ventana de capa—, y recién después la cáscara de GTK, ya
+/// vacía: al revés, GTK destruiría un widget que wry cree suyo, y eso es un
+/// segfault en el hilo principal.
+fn teardown(app: &AppHandle) {
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        READY.store(false, Ordering::SeqCst);
+        if let Some(window) = app.get_webview_window("banner") {
+            let _ = window.destroy();
+        }
+        BANNER_WIN.with(|w| {
+            if let Some(win) = w.borrow_mut().take() {
+                unsafe { win.destroy() };
+            }
+        });
+        traza("webview roto desarmado para reintentar");
+    });
 }
