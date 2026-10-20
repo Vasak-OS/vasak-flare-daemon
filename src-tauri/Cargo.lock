@@ -4618,7 +4618,7 @@ dependencies = [
 
 [[package]]
 name = "vasak-flare-daemon"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -4636,6 +4636,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-vicons",
  "tokio",
+ "webkit2gtk",
  "zbus",
 ]
 
