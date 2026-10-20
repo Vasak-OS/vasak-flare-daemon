@@ -192,6 +192,20 @@ fn tune_webkit(webview: &webkit2gtk::WebView) {
         // No navega páginas: con el caché mínimo alcanza.
         context.set_cache_model(CacheModel::DocumentViewer);
     }
+
+    // El cartel es residente toda la sesión y ya no se recrea una vez cargado: el
+    // vigilante de arranque sólo cubre que nunca cargue. Si su `WebKitWebProcess`
+    // muere después (un crash del renderer, el OOM killer), sin esto quedaría con
+    // una página muerta y `READY` en `true` para siempre —`deliver` emitiría a la
+    // nada y las notificaciones dejarían de verse—, roto hasta reiniciar el
+    // servicio. Recargar respawnea el proceso y remonta el frontend, que vuelve a
+    // pedir con `banner_ready`; antes se vuelve `READY` a `false` para que lo que
+    // llegue mientras tanto se encole en vez de perderse.
+    webview.connect_web_process_terminated(|webview, reason| {
+        eprintln!("[flare] el WebKitWebProcess del cartel terminó ({reason:?}); recargando");
+        READY.store(false, Ordering::SeqCst);
+        webview.reload();
+    });
 }
 
 /// Reparent the banner webview into a wlr-layer-shell window anchored

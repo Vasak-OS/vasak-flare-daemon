@@ -32,6 +32,18 @@ fn no_vuelve_el_desarme_por_inactividad() {
 }
 
 #[test]
+fn recupera_el_cartel_si_su_web_process_muere() {
+    // El vigilante de arranque sólo cubre que el webview nunca cargue. Un crash
+    // del WebKitWebProcess ya cargado dejaría el cartel mudo con READY en true;
+    // esto lo recupera recargando.
+    assert!(
+        COMMANDS.contains("connect_web_process_terminated"),
+        "falta la recuperación: sin `web-process-terminated`, si el proceso del \
+         cartel muere a mitad de sesión queda roto hasta reiniciar el servicio."
+    );
+}
+
+#[test]
 fn esconder_el_cartel_no_lo_destruye() {
     let desde = COMMANDS.find("fn hide_banner").expect("falta hide_banner");
     let cuerpo = &COMMANDS[desde..];
