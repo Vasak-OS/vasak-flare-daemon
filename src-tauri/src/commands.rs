@@ -13,9 +13,17 @@ use std::sync::Arc;
 use gtk::prelude::*;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
-use crate::banner::{self, traza, CREATING, CREATION, READY, WARMUP_LIMIT};
+use crate::banner::{self, CREATING, CREATION, READY, WARMUP_LIMIT};
 use crate::db::{self, Db};
 use crate::{banner_size, server, BANNER_MIN_HEIGHT, BANNER_WIDTH, BANNER_WIN};
+
+/// Traza sólo cuando se pide, para poder seguir el ciclo de vida sin ensuciar
+/// el journal de una sesión normal.
+pub(crate) fn traza(mensaje: &str) {
+    if std::env::var_os("VASAK_FLARE_TRACE").is_some() {
+        eprintln!("[flare/banner] {mensaje}");
+    }
+}
 
 /// Le pide al escritorio que traiga al frente la aplicación que mandó el aviso.
 ///

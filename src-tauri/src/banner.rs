@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter};
 
-use crate::commands::ensure_created;
+use crate::commands::{ensure_created, traza};
 use crate::db::StoredNotification;
 
 /// Si el frontend nunca avisó que está listo, algo salió mal al cargar.
@@ -48,14 +48,6 @@ pub(crate) static CREATION: AtomicU64 = AtomicU64::new(0);
 
 /// Notificaciones que llegaron mientras el webview calentaba.
 static PENDING: Mutex<Vec<StoredNotification>> = Mutex::new(Vec::new());
-
-/// Traza sólo cuando se pide, para poder seguir el ciclo de vida sin ensuciar
-/// el journal de una sesión normal.
-pub(crate) fn traza(mensaje: &str) {
-    if std::env::var_os("VASAK_FLARE_TRACE").is_some() {
-        eprintln!("[flare/banner] {mensaje}");
-    }
-}
 
 /// Hace llegar una notificación al cartel, exista o no todavía.
 pub fn deliver(app: &AppHandle, stored: &StoredNotification) {
