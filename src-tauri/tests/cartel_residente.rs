@@ -14,7 +14,7 @@
 //! tiene un solo WebKitWebProcess en reposo, no decenas.
 
 const BANNER: &str = include_str!("../src/banner.rs");
-const LIB: &str = include_str!("../src/lib.rs");
+const COMMANDS: &str = include_str!("../src/commands.rs");
 
 #[test]
 fn no_vuelve_el_desarme_por_inactividad() {
@@ -33,8 +33,8 @@ fn no_vuelve_el_desarme_por_inactividad() {
 
 #[test]
 fn esconder_el_cartel_no_lo_destruye() {
-    let desde = LIB.find("fn hide_banner").expect("falta hide_banner");
-    let cuerpo = &LIB[desde..];
+    let desde = COMMANDS.find("fn hide_banner").expect("falta hide_banner");
+    let cuerpo = &COMMANDS[desde..];
     let hasta = cuerpo
         .find("\n}\n")
         .expect("no se encontró el fin de hide_banner");

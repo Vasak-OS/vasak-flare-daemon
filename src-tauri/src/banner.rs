@@ -136,12 +136,12 @@ fn ensure_created(app: &AppHandle) {
             let handle = app.clone();
             let _ = app.run_on_main_thread(move || {
                 if let Some(ventana) = handle.get_webview_window("banner") {
-                    crate::setup_banner_layer(&ventana);
+                    crate::commands::setup_banner_layer(&ventana);
                 }
                 // Mapear ahora, no cuando el frontend lo pida: una ventana sin
                 // mapear no carga la página, y sólo se llega acá porque hay algo
                 // que mostrar.
-                crate::show_banner_window(&handle);
+                crate::commands::show_banner_window(&handle);
             });
 
             // Si el frontend nunca llega a `banner_ready`, esto desarma el
