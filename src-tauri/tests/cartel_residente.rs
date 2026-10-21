@@ -61,3 +61,37 @@ fn esconder_el_cartel_no_lo_destruye() {
          y reusar el webview evita la fuga y la ventana de carga."
     );
 }
+
+/// Cuerpo de `fn <nombre>` en `COMMANDS`, sin las líneas de comentario: los
+/// comentarios explican por qué algo NO está y nombran justo lo prohibido.
+fn cuerpo_sin_comentarios(nombre: &str) -> String {
+    let desde = COMMANDS
+        .find(&format!("fn {nombre}("))
+        .unwrap_or_else(|| panic!("falta {nombre}"));
+    let cuerpo = &COMMANDS[desde..];
+    let hasta = cuerpo
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("no se encontró el fin de {nombre}"));
+    cuerpo[..hasta]
+        .lines()
+        .filter(|linea| !linea.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn el_cartel_no_apaga_la_aceleracion_por_hardware() {
+    // Con `HardwareAccelerationPolicy::Never` el webview renderizaba por
+    // software y su superficie de capa transparente no presentaba ningún pixel:
+    // la ventana quedaba mapeada en el compositor (420×92, capa overlay) y el
+    // DOM maquetaba, pero el cartel no se veía. Es una guarda de fuente: la
+    // presentación del buffer necesita un display y un WebKitGTK reales.
+    let cuerpo = cuerpo_sin_comentarios("tune_webkit");
+    assert!(
+        !cuerpo.contains("set_hardware_acceleration_policy")
+            && !cuerpo.contains("HardwareAccelerationPolicy"),
+        "tune_webkit volvió a tocar la política de aceleración por hardware: \
+         con `Never` el cartel (superficie de capa transparente) se mapea pero \
+         no se ve. Dejala en su valor por omisión."
+    );
+}
