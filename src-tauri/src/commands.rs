@@ -175,18 +175,21 @@ pub(crate) fn banner_ready() -> Vec<db::StoredNotification> {
 }
 
 /// Afina WebKit para el cartel: es estático, chico y efímero, no necesita los
-/// cachés ni la GPU de un navegador. Baja el piso de memoria del webview.
+/// cachés, los extras de desarrollo ni WebGL de un navegador. Baja el piso de
+/// memoria del webview sin tocar la aceleración por hardware, que tiene que
+/// quedar encendida para que la superficie transparente del cartel se pinte.
 fn tune_webkit(webview: &webkit2gtk::WebView) {
-    use webkit2gtk::{
-        CacheModel, HardwareAccelerationPolicy, SettingsExt, WebContextExt, WebViewExt,
-    };
+    use webkit2gtk::{CacheModel, SettingsExt, WebContextExt, WebViewExt};
     if let Some(settings) = WebViewExt::settings(webview) {
         settings.set_enable_developer_extras(false);
         settings.set_enable_back_forward_navigation_gestures(false);
         settings.set_enable_webgl(false);
-        // Un cartel estático y chico no gana nada con la GPU, y sin aceleración se
-        // ahorra un proceso de GPU y los buffers DMABUF.
-        settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
+        // La aceleración por hardware se deja en su valor por omisión a propósito.
+        // Con `HardwareAccelerationPolicy::Never` el webview renderizaba por
+        // software y su superficie de capa transparente no presentaba ningún
+        // pixel: el cartel quedaba mapeado abajo a la derecha pero invisible.
+        // El overlay de vasak-terminal usa el mismo patrón y por eso tampoco la
+        // desactiva. El ahorro de un proceso de GPU no vale un cartel que no se ve.
     }
     if let Some(context) = WebViewExt::web_context(webview) {
         // No navega páginas: con el caché mínimo alcanza.
