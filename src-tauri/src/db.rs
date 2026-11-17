@@ -192,6 +192,18 @@ impl Db {
         Ok(v.map(|x| x as u32))
     }
 
+    /// El nombre de la aplicación que mandó una notificación del historial, para
+    /// poder traerla al frente cuando se la acciona desde el centro.
+    pub fn app_name_for_history(&self, id: i64) -> rusqlite::Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT app_name FROM notifications WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()
+    }
+
     pub fn unread_count(&self) -> rusqlite::Result<i64> {
         self.conn.lock().unwrap().query_row(
             "SELECT COUNT(*) FROM notifications WHERE read = 0",
@@ -304,6 +316,29 @@ mod tests {
 
         assert_eq!(db.notif_id_for_history(history_id).unwrap(), Some(42));
         assert_eq!(db.notif_id_for_history(history_id + 999).unwrap(), None);
+    }
+
+    /// Accionar «abrir» desde el centro trae la app al frente: hace falta saber
+    /// qué aplicación mandó la notificación, por el id de historial.
+    #[test]
+    fn el_id_de_historial_lleva_al_nombre_de_la_aplicacion() {
+        let db = Db::in_memory().unwrap();
+        let mut correo = sample(1, "uno");
+        correo.app_name = "vasak-mail".into();
+        let mut agenda = sample(2, "dos");
+        agenda.app_name = "vasak-calendar".into();
+        let id_correo = db.insert(&correo).unwrap();
+        let id_agenda = db.insert(&agenda).unwrap();
+
+        assert_eq!(
+            db.app_name_for_history(id_correo).unwrap().as_deref(),
+            Some("vasak-mail")
+        );
+        assert_eq!(
+            db.app_name_for_history(id_agenda).unwrap().as_deref(),
+            Some("vasak-calendar")
+        );
+        assert_eq!(db.app_name_for_history(id_agenda + 999).unwrap(), None);
     }
 
     /// Marcar leída una notificación que ya no existe no puede fallar: el cartel

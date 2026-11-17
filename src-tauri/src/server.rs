@@ -386,6 +386,13 @@ impl VasakNotifications {
                 }
             }
 
+            // Emitir `ActionInvoked` no alcanza: en Wayland la aplicación no
+            // puede traerse sola al frente, así que accionar desde el centro
+            // (igual que desde el cartel) tiene que pedir `PresentApp`.
+            if let Ok(Some(app_name)) = self.state.db.app_name_for_history(id) {
+                tokio::spawn(crate::commands::traer_al_frente(app_name));
+            }
+
             // Y se da por cerrada: quien la mandó tiene que dejar de esperarla.
             emit_dismissed(notif_id).await;
         }
