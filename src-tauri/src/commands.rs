@@ -36,7 +36,7 @@ pub(crate) fn traza(mensaje: &str) {
 /// Va **sin esperar respuesta** (ese servicio no contesta: una llamada normal se
 /// colgaría hasta el plazo de D-Bus por cada clic) y en una tarea aparte, para
 /// que un transporte tapado no demore marcar la notificación leída.
-async fn traer_al_frente(app_name: String) {
+pub(crate) async fn traer_al_frente(app_name: String) {
     if app_name.is_empty() {
         return;
     }
